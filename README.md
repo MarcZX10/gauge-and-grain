@@ -1,7 +1,8 @@
-# gauge-and-grain · `gg`
+<h1 align="center">Gauge &amp; Grain</h1>
 
-**Where does your AI coding usage go?** One local, honest view of the tokens and estimated cost
-across Claude Code, Codex and more — as a compact report or an interactive terminal dashboard.
+<p align="center"><b>Where does your AI coding usage go?</b><br>
+One local, honest view of your tokens and estimated cost across Claude Code, Codex and more —<br>
+as a compact report or an interactive terminal dashboard. Run it with <code>gg</code>.</p>
 
 <p align="center"><img src="docs/img/overview.png" alt="gg overview: cards, daily chart, token mix, providers, models and projects" width="920"></p>
 <p align="center"><sub>Screenshots use synthetic demo data (<code>scripts/demodata</code>), not anyone's real logs.</sub></p>
