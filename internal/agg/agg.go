@@ -18,11 +18,39 @@ type Filter struct {
 	Providers []string // exact provider ids
 	Models    []string // case-insensitive substrings, any may match
 	Projects  []string // case-insensitive substrings of the project path
-	Text      string   // free text: matches model, project or session (TUI search)
+	// ModelsExact and ProjectsExact match whole names (case-insensitive). A
+	// drill-down uses them: the row "gpt-5" must not also pull in "gpt-5.4".
+	ModelsExact, ProjectsExact []string
+	Text                       string // free text: matches model, project or session (TUI search)
 	// PrevFrom/PrevTo override the comparison window (exclusive end). Left
 	// zero, the comparison is the window of equal length just before From.
 	// Calendar periods use it so "this month" compares with the last whole month.
 	PrevFrom, PrevTo time.Time
+}
+
+// PrevWindow is the window of equal length just before [from, to), counted in
+// whole local days. Subtracting durations is wrong across a daylight-saving
+// change: 14 days in October can be 14 days and an hour long.
+func PrevWindow(from, to time.Time, loc *time.Location) (time.Time, time.Time) {
+	n := DaysBetween(from, to, loc)
+	return addDays(from, loc, -n), from
+}
+
+// DaysBetween counts the local calendar days from the day of from up to the
+// day that contains to (a bound inside a day includes that day, as in Filter).
+func DaysBetween(from, to time.Time, loc *time.Location) int {
+	a, b := dayNum(from, loc), dayNum(to, loc)
+	if h, m, s := to.In(loc).Clock(); h|m|s != 0 {
+		b++
+	}
+	return int(b - a)
+}
+
+// addDays moves t by whole calendar days in loc, keeping its wall-clock time.
+func addDays(t time.Time, loc *time.Location, n int) time.Time {
+	y, m, d := t.In(loc).Date()
+	h, mi, s := t.In(loc).Clock()
+	return time.Date(y, m, d+n, h, mi, s, t.Nanosecond(), loc)
 }
 
 // Match reports whether e passes the filter.
@@ -42,6 +70,12 @@ func (f *Filter) Match(e *model.Event) bool {
 	if len(f.Projects) > 0 && !anySub(f.Projects, e.Project) {
 		return false
 	}
+	if len(f.ModelsExact) > 0 && !anyEqual(f.ModelsExact, e.Model) {
+		return false
+	}
+	if len(f.ProjectsExact) > 0 && !anyEqual(f.ProjectsExact, e.Project) {
+		return false
+	}
 	if f.Text != "" && !anySub([]string{f.Text}, e.Model+"\x00"+e.Project+"\x00"+e.Session) {
 		return false
 	}
@@ -51,6 +85,15 @@ func (f *Filter) Match(e *model.Event) bool {
 func contains(l []string, s string) bool {
 	for _, v := range l {
 		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+func anyEqual(names []string, s string) bool {
+	for _, v := range names {
+		if strings.EqualFold(v, s) {
 			return true
 		}
 	}
@@ -279,6 +322,8 @@ type cellFilter struct {
 	f              *Filter
 	text           string
 	models, projs  []string
+	// exact names (lower case): a row matches only itself
+	modelsExact, projsExact []string
 }
 
 func (x *Index) compile(f *Filter) cellFilter {
@@ -298,6 +343,12 @@ func (x *Index) compile(f *Filter) cellFilter {
 	for _, p := range f.Projects {
 		cf.projs = append(cf.projs, strings.ToLower(p))
 	}
+	for _, m := range f.ModelsExact {
+		cf.modelsExact = append(cf.modelsExact, strings.ToLower(m))
+	}
+	for _, p := range f.ProjectsExact {
+		cf.projsExact = append(cf.projsExact, strings.ToLower(p))
+	}
 	return cf
 }
 
@@ -315,6 +366,12 @@ func (cf *cellFilter) match(c *cell) bool {
 		return false
 	}
 	if len(cf.projs) > 0 && !anyIn(cf.projs, c.lowProject) {
+		return false
+	}
+	if len(cf.modelsExact) > 0 && !contains(cf.modelsExact, c.lowModel) {
+		return false
+	}
+	if len(cf.projsExact) > 0 && !contains(cf.projsExact, c.lowProject) {
 		return false
 	}
 	if cf.text != "" && !strings.Contains(c.lowHay, cf.text) {
@@ -355,9 +412,8 @@ func (x *Index) Summarize(f Filter) *Summary {
 	var prevCF cellFilter
 	var prevF Filter
 	if !f.From.IsZero() && !f.To.IsZero() {
-		d := f.To.Sub(f.From)
 		prevF = f
-		prevF.From, prevF.To = f.From.Add(-d), f.From
+		prevF.From, prevF.To = PrevWindow(f.From, f.To, x.loc)
 		if !f.PrevFrom.IsZero() && !f.PrevTo.IsZero() {
 			prevF.From, prevF.To = f.PrevFrom, f.PrevTo
 		}

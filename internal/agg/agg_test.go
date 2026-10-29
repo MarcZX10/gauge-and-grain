@@ -220,3 +220,46 @@ func TestSameModelNameFromTwoProvidersIsShownAsTwoDistinctRows(t *testing.T) {
 		t.Errorf("labels: %v", labels)
 	}
 }
+
+func TestExactNameFiltersDoNotMatchSubstrings(t *testing.T) {
+	evs := []model.Event{
+		{Provider: "p", Model: "gpt-5", Project: "/a/app", Time: time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC), Input: 100},
+		{Provider: "p", Model: "gpt-5.4", Project: "/a/app2", Time: time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC), Input: 900},
+	}
+	pt, _ := pricing.Load("")
+	idx := NewIndex(evs, pt, time.UTC)
+	f := Filter{ModelsExact: []string{"GPT-5"}}
+	if got := idx.Summarize(f).Total.Tokens(); got != 100 {
+		t.Errorf("exact model: %d, want 100", got)
+	}
+	f = Filter{ProjectsExact: []string{"/a/app"}}
+	if got := idx.Summarize(f).Total.Tokens(); got != 100 {
+		t.Errorf("exact project: %d, want 100", got)
+	}
+	// the substring filter is still there for --model / --project
+	if got := idx.Summarize(Filter{Models: []string{"gpt-5"}}).Total.Tokens(); got != 1000 {
+		t.Errorf("substring model: %d", got)
+	}
+	ef := Filter{ModelsExact: []string{"gpt-5"}}
+	if ef.Match(&evs[1]) || !ef.Match(&evs[0]) {
+		t.Error("Match must apply the exact filter too")
+	}
+}
+
+// Across a daylight-saving change the comparison window is still whole days:
+// 20 Oct–2 Nov 2026 in Madrid is 14 days, and the window before it is 14 days.
+func TestPreviousWindowIsWholeDaysAcrossDST(t *testing.T) {
+	madrid, err := time.LoadLocation("Europe/Madrid")
+	if err != nil {
+		t.Skip("no tz database:", err)
+	}
+	from := time.Date(2026, 10, 20, 0, 0, 0, 0, madrid)
+	to := time.Date(2026, 11, 3, 0, 0, 0, 0, madrid)
+	pf, pt := PrevWindow(from, to, madrid)
+	if DaysBetween(pf, pt, madrid) != 14 || !pt.Equal(from) {
+		t.Errorf("previous window %v..%v", pf, pt)
+	}
+	if pf.Format("2006-01-02") != "2026-10-06" {
+		t.Errorf("start %v", pf)
+	}
+}
