@@ -26,7 +26,7 @@ type Claude struct{}
 
 func (Claude) ID() string         { return "claude" }
 func (Claude) Name() string       { return "Claude Code" }
-func (Claude) ParserVersion() int { return 2 } // 2: tool uses
+func (Claude) ParserVersion() int { return 3 } // 3: tool uses, one per id
 func (Claude) Fields() Fields {
 	return Fields{CacheRead: true, CacheWrite: true, Reasoning: true,
 		Note: "reasoning shown only when the log carries thinking_tokens"}
@@ -94,6 +94,7 @@ type claudeLine struct {
 // claudeBlock is one content block of a message; only tool uses are read.
 type claudeBlock struct {
 	Type  string `json:"type"`
+	ID    string `json:"id"`
 	Name  string `json:"name"`
 	Input *struct {
 		Skill string `json:"skill"`
@@ -103,7 +104,7 @@ type claudeBlock struct {
 // claudeTools names the tools one message uses: each tool_use block, with a
 // skill shown as skill:<name> (the Skill tool takes the skill's name).
 func claudeTools(content []claudeBlock) string {
-	var names []string
+	var uses []string
 	for _, b := range content {
 		if b.Type != "tool_use" {
 			continue
@@ -115,9 +116,9 @@ func claudeTools(content []claudeBlock) string {
 		if n == "Skill" && b.Input != nil && b.Input.Skill != "" {
 			n = "skill:" + b.Input.Skill
 		}
-		names = append(names, n)
+		uses = append(uses, model.ToolEntry(b.ID, n))
 	}
-	return model.ToolList(names)
+	return strings.Join(uses, ",")
 }
 
 var (

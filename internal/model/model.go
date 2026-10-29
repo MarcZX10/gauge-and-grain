@@ -37,8 +37,8 @@ type Event struct {
 	Output       int64
 	Reasoning    int64
 	Has          uint8
-	// Tools lists the tools this call asked for, one entry per tool use,
-	// comma separated (see ToolList). Empty when the source does not say.
+	// Tools lists the tool uses of this call, comma separated, each as
+	// id=name (see ToolEntry). Empty when the source does not record them.
 	Tools string
 }
 
@@ -46,26 +46,66 @@ type Event struct {
 // truncated rather than kept.
 const MaxToolName = 96
 
-// ToolList joins tool names for Event.Tools. Commas inside a name would
-// break the list, so they are replaced.
-func ToolList(names []string) string {
-	clean := make([]string, 0, len(names))
-	for _, n := range names {
-		n = Clean(n)
-		if len(n) > MaxToolName {
-			n = n[:MaxToolName]
-		}
-		clean = append(clean, strings.ReplaceAll(n, ",", ";"))
-	}
-	return strings.Join(clean, ",")
+// ToolEntry encodes one tool use for Event.Tools as id=name. The id is what
+// makes a use countable once: Claude writes one log line per content block,
+// and every line of a reply repeats its usage, so the same use can arrive
+// more than once. Commas and equals signs would break the list, so they are
+// replaced.
+func ToolEntry(id, name string) string {
+	return cleanToken(id, 64) + "=" + cleanToken(name, MaxToolName)
 }
 
-// ToolNames splits Event.Tools back into names.
-func ToolNames(s string) []string {
+func cleanToken(s string, max int) string {
+	s = strings.NewReplacer(",", ";", "=", ":").Replace(Clean(s))
+	if len(s) > max {
+		s = s[:max]
+	}
+	return s
+}
+
+// ToolEntries splits Event.Tools into its id=name entries.
+func ToolEntries(s string) []string {
 	if s == "" {
 		return nil
 	}
 	return strings.Split(s, ",")
+}
+
+// ToolNames returns the tool names of Event.Tools, in order, one per use.
+func ToolNames(s string) []string {
+	var out []string
+	for _, e := range ToolEntries(s) {
+		if i := strings.IndexByte(e, '='); i >= 0 {
+			e = e[i+1:]
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// mergeTools unions the tool uses of two copies of one call by id, so
+// chunks that each carry some of the blocks add up to the complete list.
+// An entry without an id cannot be recognised as seen, so it is kept as is.
+func mergeTools(a, b string) string {
+	if b == "" || a == b {
+		return a
+	}
+	if a == "" {
+		return b
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, e := range append(ToolEntries(a), ToolEntries(b)...) {
+		id, _, _ := strings.Cut(e, "=")
+		if id != "" {
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+		}
+		out = append(out, e)
+	}
+	return strings.Join(out, ",")
 }
 
 // Total is the provider-neutral token total: every token billed or served.
@@ -87,11 +127,7 @@ func (e *Event) Merge(o *Event) {
 	if e.Model == "" || e.Model == "unknown" {
 		e.Model = o.Model
 	}
-	// A streamed message is repeated with more content each time, so the
-	// longest list of tool uses is the complete one.
-	if len(ToolNames(o.Tools)) > len(ToolNames(e.Tools)) {
-		e.Tools = o.Tools
-	}
+	e.Tools = mergeTools(e.Tools, o.Tools)
 }
 
 // ParseStats counts what a parser saw but could not use.
