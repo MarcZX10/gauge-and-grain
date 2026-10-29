@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -21,6 +22,9 @@ func gg(t *testing.T, bin, home string, args ...string) (string, error) {
 
 func setup(t *testing.T) (bin, home string) {
 	bin = filepath.Join(t.TempDir(), "gg")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
 	if b, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, b)
 	}

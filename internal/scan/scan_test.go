@@ -223,8 +223,8 @@ func TestCorruptCacheEntryIsReparsedNotTrusted(t *testing.T) {
 }
 
 func TestUnreadableFileIsReportedAndOthersStillCount(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root can read everything")
+	if os.Geteuid() == 0 || runtime.GOOS == "windows" {
+		t.Skip("file permissions cannot block reads here")
 	}
 	cl, _ := env(t)
 	copyFixture(t, "claude/session-a.jsonl", filepath.Join(cl, "projects", "p", "a.jsonl"))
