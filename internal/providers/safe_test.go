@@ -3,6 +3,7 @@ package providers
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -25,7 +26,11 @@ func TestReadRegularLimit(t *testing.T) {
 
 // Glob metacharacters in the home directory must not break discovery.
 func TestListFilesTreatsDirectoryLiterally(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "x[1]*")
+	name := "x[1]"
+	if runtime.GOOS != "windows" { // Windows does not allow * in a file name
+		name += "*"
+	}
+	dir := filepath.Join(t.TempDir(), name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
