@@ -31,6 +31,9 @@ import (
 var version = "dev"
 
 func init() {
+	if version != "dev" && !strings.HasPrefix(version, "v") {
+		version = "v" + version // GoReleaser strips the leading v
+	}
 	if version == "dev" { // `go install ...@vX.Y.Z` embeds the module version
 		if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
 			version = bi.Main.Version

@@ -42,8 +42,8 @@ go install github.com/MarcZX10/gauge-and-grain/cmd/gg@latest
 replacing anything and install to `~/.local/bin` (`%LOCALAPPDATA%\gg\bin` on Windows); override with
 `GG_INSTALL_DIR`, or pin a version with `GG_VERSION=v0.1.0`.
 
-> Release binaries are built by the `release` workflow when a `v*` tag is pushed. Until the first
-> tag exists, use `go install` or `make build`.
+> Release binaries (Linux, macOS, Windows × amd64, arm64) are built by the `release` workflow whenever a
+> `v*` tag is pushed; see the [Releases](https://github.com/MarcZX10/gauge-and-grain/releases) page.
 
 ## Use
 
