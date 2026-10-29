@@ -51,6 +51,7 @@ type Result struct {
 	Parsed    int            // files parsed this run
 	Errors    []string       // unreadable files (never fatal)
 	Duplicate int            // records dropped as duplicates
+	Stale     int            // files served from an older parser's cache (AllowStale)
 	Cancelled bool
 }
 
@@ -59,6 +60,13 @@ type Options struct {
 	Providers []providers.Provider
 	CacheDir  string // "" disables the cache
 	Progress  func(Progress)
+	// AllowStale serves files that did not change from a cache written by an
+	// older parser version, instead of re-parsing them. The result is then
+	// complete for usage but may lack what the newer parser adds (such as
+	// tool calls): Result.Stale counts those files, and a scan without
+	// AllowStale refreshes them. The dashboard uses it to show data at once
+	// after an upgrade, rather than waiting for every log to be read again.
+	AllowStale bool
 }
 
 type entry struct {
@@ -152,7 +160,7 @@ func Run(ctx context.Context, o Options) *Result {
 		}
 	}
 	total := len(jobs)
-	var done, cached, parsed atomic.Int64
+	var done, cached, parsed, stale atomic.Int64
 	var bytesDone atomic.Int64
 	var mu, progMu sync.Mutex
 
@@ -199,7 +207,7 @@ func Run(ctx context.Context, o Options) *Result {
 			defer wg.Done()
 			for i := range work {
 				j := jobs[i]
-				e, fromCache, err := processFile(ctx, j, o.CacheDir)
+				e, fromCache, err := processFile(ctx, j, o.CacheDir, o.AllowStale)
 				if err != nil && ctx.Err() != nil {
 					e = nil // cancelled mid-file: not a file error
 				} else if err != nil {
@@ -211,6 +219,9 @@ func Run(ctx context.Context, o Options) *Result {
 					bytesDone.Add(e.Size)
 					if fromCache {
 						cached.Add(1)
+						if e.Parser != j.p.ParserVersion() {
+							stale.Add(1)
+						}
 					} else {
 						parsed.Add(1)
 					}
@@ -243,7 +254,7 @@ feed:
 	if ctx.Err() != nil {
 		res.Cancelled = true
 	}
-	res.Cached, res.Parsed = int(cached.Load()), int(parsed.Load())
+	res.Cached, res.Parsed, res.Stale = int(cached.Load()), int(parsed.Load()), int(stale.Load())
 	if !res.Cancelled && o.CacheDir != "" {
 		prune(o.CacheDir, o.Providers, jobs)
 	}
@@ -391,7 +402,7 @@ func putU64(b []byte, v uint64) {
 // processFile returns the file's events, from the cache when the file is
 // unchanged, resuming after the cached offset when it has only grown, and
 // parsing from scratch otherwise.
-func processFile(ctx context.Context, j job, cacheDir string) (*entry, bool, error) {
+func processFile(ctx context.Context, j job, cacheDir string, allowStale bool) (*entry, bool, error) {
 	st, err := os.Stat(j.path)
 	if err != nil {
 		return nil, false, err
@@ -401,18 +412,29 @@ func processFile(ctx context.Context, j job, cacheDir string) (*entry, bool, err
 	}
 	sig := keySig(j.p, j.path)
 	var cp string
-	var prev *entry
+	var prev, staleC *entry
 	if cacheDir != "" {
 		cp = cachePath(cacheDir, j.p, j.path)
-		if c, ok := loadEntry(cp); ok && c.Schema == schemaVersion && c.Parser == j.p.ParserVersion() {
+		if c, ok := loadEntry(cp); ok && c.Schema == schemaVersion {
 			unchanged := c.Size == st.Size() && c.ModNano == st.ModTime().UnixNano() && c.Extra == sig
-			// A last line without a newline was left for later because the
-			// writer might still be in the middle of it. Once the file has
-			// been quiet long enough it is complete, so re-read the tail.
-			if unchanged && !(c.Partial && time.Since(st.ModTime()) > idleAfter) {
-				return c, true, nil
+			if c.Parser == j.p.ParserVersion() {
+				// A last line without a newline was left for later because the
+				// writer might still be in the middle of it. Once the file has
+				// been quiet long enough it is complete, so re-read the tail.
+				if unchanged && !(c.Partial && time.Since(st.ModTime()) > idleAfter) {
+					return c, true, nil
+				}
+				prev = c
+			} else if allowStale {
+				// Written by an older parser. An unchanged log's usage is still
+				// right, so it is served now, marked stale (Options.AllowStale).
+				// A log that only grew is served up to what the cache holds,
+				// once its beginning is confirmed unchanged below.
+				if unchanged {
+					return c, true, nil
+				}
+				staleC = c
 			}
-			prev = c
 		}
 	}
 	if ctx.Err() != nil {
@@ -428,6 +450,11 @@ func processFile(ctx context.Context, j job, cacheDir string) (*entry, bool, err
 	defer f.Close()
 	if fst, err := f.Stat(); err != nil || !fst.Mode().IsRegular() {
 		return nil, false, errors.New("not a regular file")
+	}
+	if c := staleC; allowStale && c != nil && c.Offset > 0 && c.Offset <= st.Size() &&
+		eq(c.Head, fingerprint(f, 0, min(fpLen, c.Offset))) &&
+		eq(c.Tail, fingerprint(f, max(0, c.Offset-fpLen), min(fpLen, c.Offset))) {
+		return c, true, nil // the part the cache holds is unchanged: serve it, stale
 	}
 
 	if wf, ok := j.p.(providers.WholeFiler); ok && wf.WholeFile(j.path) {

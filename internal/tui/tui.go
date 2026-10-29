@@ -131,6 +131,8 @@ type model_ struct {
 	// refreshing marks a background rescan: the view stays put meanwhile.
 	refreshing bool
 	updated    time.Time
+	// freshQueued is set once the stale cache has been replaced by a full scan.
+	freshQueued bool
 }
 
 type progressMsg scan.Progress
@@ -218,7 +220,7 @@ func (m *model_) savePrefs() {
 	}
 }
 
-func (m *model_) Init() tea.Cmd { return tea.Batch(m.startScan(), tick(), m.refreshLater()) }
+func (m *model_) Init() tea.Cmd { return tea.Batch(m.startScan(true), tick(), m.refreshLater()) }
 
 // refreshLater schedules the next background rescan. Unchanged files come
 // from the cache, so a rescan is cheap; the view keeps its place meanwhile.
@@ -233,12 +235,15 @@ func tick() tea.Cmd {
 	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
-func (m *model_) startScan() tea.Cmd {
+// startScan scans in the background. With allowStale, files whose cache is
+// from an older parser but unchanged are served as they are (see
+// scan.Options.AllowStale), so the dashboard can show data at once.
+func (m *model_) startScan(allowStale bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithCancel(context.Background())
 		ch := make(chan tea.Msg, 64)
 		go func() {
-			res := scan.Run(ctx, scan.Options{Providers: m.cfg.Providers, CacheDir: m.cfg.CacheDir, Progress: func(p scan.Progress) {
+			res := scan.Run(ctx, scan.Options{Providers: m.cfg.Providers, CacheDir: m.cfg.CacheDir, AllowStale: allowStale, Progress: func(p scan.Progress) {
 				select { // never block the scan on a slow UI
 				case ch <- progressMsg(p):
 				default:
@@ -304,7 +309,7 @@ func (m *model_) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.refreshLater()
 		}
 		m.refreshing = true
-		return m, tea.Batch(m.startScan(), m.refreshLater())
+		return m, tea.Batch(m.startScan(true), m.refreshLater())
 	case doneMsg:
 		m.res = (*scan.Result)(msg)
 		m.events = m.res.Events
@@ -315,6 +320,12 @@ func (m *model_) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scanTook = time.Since(m.started)
 		m.idx = agg.NewIndex(m.events, m.cfg.Prices, m.cfg.Loc)
 		m.applyPeriod()
+		if m.res.Stale > 0 && !m.freshQueued {
+			// The usage above is from the previous parser's cache. Read the
+			// changed-parser files again in the background, once per session.
+			m.freshQueued, m.refreshing = true, true
+			return m, m.startScan(false)
+		}
 	case tea.MouseMsg:
 		return m.mouse(msg)
 	case tea.KeyMsg:
@@ -444,7 +455,7 @@ func (m *model_) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "r", "R":
 		m.loading, m.cancelled, m.prog, m.started = true, false, scan.Progress{}, time.Now()
 		m.refreshing = false
-		return m, tea.Batch(m.startScan(), tick())
+		return m, tea.Batch(m.startScan(false), tick())
 	}
 	return m, nil
 }
@@ -1671,7 +1682,9 @@ func (m *model_) status() string {
 	if m.sort == byCost {
 		s += " · sorted by cost"
 	}
-	if m.refreshing {
+	if m.res != nil && m.res.Stale > 0 {
+		s += fmt.Sprintf(" · %d files updating from the previous version", m.res.Stale)
+	} else if m.refreshing {
 		s += " · updating…"
 	} else if !m.updated.IsZero() {
 		s += " · updated " + m.updated.Format("15:04")

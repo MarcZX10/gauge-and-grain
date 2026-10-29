@@ -33,7 +33,7 @@ func TestNamedPipeInTheLogTreeDoesNotHang(t *testing.T) {
 		t.Fatal("a FIFO hung the scan")
 	}
 	// even handed to the scanner directly (a file swapped in after listing)
-	if _, _, err := processFile(context.Background(), job{providers.Claude{}, filepath.Join(cl, "projects", "p", "pipe.jsonl")}, ""); err == nil {
+	if _, _, err := processFile(context.Background(), job{providers.Claude{}, filepath.Join(cl, "projects", "p", "pipe.jsonl")}, "", false); err == nil {
 		t.Error("processFile must refuse a FIFO")
 	}
 	_ = os.Remove(filepath.Join(cl, "projects", "p", "pipe.jsonl"))

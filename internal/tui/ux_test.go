@@ -272,3 +272,31 @@ func TestToolsView(t *testing.T) {
 		t.Error("the tab bar keeps Notes")
 	}
 }
+
+// After an upgrade the first result comes from the previous cache: the view
+// shows it at once, says so, and a full scan follows, once per session.
+func TestStaleResultShowsAtOnceAndRefreshesOnce(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	stale := *m.res
+	stale.Stale = 2
+	m.loading = true
+	_, cmd := m.Update(doneMsg(&stale))
+	if m.loading || cmd == nil || !m.refreshing {
+		t.Fatalf("the stale result must show at once and start the full scan: loading=%v refreshing=%v cmd=%v", m.loading, m.refreshing, cmd != nil)
+	}
+	if !strings.Contains(m.status(), "2 files updating from the previous version") {
+		t.Errorf("status while the old cache shows: %q", m.status())
+	}
+	fresh := *m.res
+	fresh.Stale = 0
+	_, cmd = m.Update(doneMsg(&fresh))
+	if m.refreshing || cmd != nil || strings.Contains(m.status(), "previous version") {
+		t.Errorf("a full result ends the update: refreshing=%v cmd=%v status=%q", m.refreshing, cmd != nil, m.status())
+	}
+	again := stale // the cache could not be rewritten: no second full scan
+	_, cmd = m.Update(doneMsg(&again))
+	if cmd != nil {
+		t.Error("the full scan runs once per session, not in a loop")
+	}
+}
