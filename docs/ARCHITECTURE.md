@@ -72,6 +72,14 @@ context). The CLI shows a one-line meter on stderr when it is a terminal (stdout
 pipes); the TUI shows a progress bar and `Esc` cancels. A cancelled scan returns what it has,
 flagged `Cancelled`, and every view says the totals are partial.
 
+### Source shapes
+Most logs are append-only JSONL read line by line (and resumed). Some tools write other shapes, which
+providers declare through small optional interfaces: `WholeFiler` (one JSON document per file, e.g.
+Gemini sessions and Cline's `ui_messages.json`; re-read in full when it changes), `PathReader` (the
+provider opens the file itself — SQLite databases for OpenCode and zstd streams for DeepSeek; the
+database's `-wal` sidecar is part of its cache key) and `Experimental` (a reason string; every view
+warns while such a provider's data is included).
+
 ### Limits
 There are **no event caps**: every event is kept so totals are exact. The cost is memory (~180 bytes
 per call: 1M calls ≈ 180 MB retained) and the warm-start time to decode the cache (~2 s per million

@@ -14,9 +14,18 @@ models, projects and trends — across providers, in a compact report or an inte
 
 | Provider | Status |
 |---|---|
-| Claude Code | supported |
-| OpenAI Codex (CLI / IDE) | supported |
-| Gemini CLI | detected, **not parsed yet** (no verified sample of its format) — see [docs/PROVIDERS.md](docs/PROVIDERS.md) |
+| Claude Code | **supported** — verified against real logs |
+| OpenAI Codex (CLI / IDE) | **supported** — verified against real logs |
+| Gemini CLI · Qwen Code · Pi Agent · DeepSeek Harness | **experimental** — see below |
+| Cline · Roo Code · Kilo Code · Zoo Code (VS Code extensions) | **experimental** |
+| OpenCode · Kilo CLI | **experimental** (SQLite, read-only) |
+| Grok · Copilot CLI · Copilot (VS Code) · Antigravity · Piebald | not supported — [why](docs/PROVIDERS.md#not-supported-and-why) |
+
+**Experimental** means the parser follows the tool's documented/third-party-described format, was tested
+with synthetic fixtures, and has **not** been checked against real logs (none were available). `gg`
+says so in the notes and in `gg sources` whenever their data is in your totals. Formats were
+cross-checked against [splitrail](https://github.com/Piebald-AI/splitrail)'s open-source analyzers
+(MIT); no code was copied. Details and data locations: [docs/PROVIDERS.md](docs/PROVIDERS.md).
 
 ## Install
 
@@ -148,7 +157,7 @@ plain text and ASCII glyphs.
 | `--days N` | last N days including today (default 30) |
 | `--from D --to D` | date range `YYYY-MM-DD`, local time, `--to` inclusive |
 | `--all` | whole history |
-| `--provider ID` | `claude`, `codex` (repeat or comma-separate) |
+| `--provider ID` | `claude`, `codex`, `gemini`, `qwen`, `pi`, `deepseek`, `opencode`, `kilocli`, `cline`, `roo`, `kilo`, `zoo` (repeat or comma-separate) |
 | `--model TEXT` | model name contains TEXT |
 | `--project TEXT` | project path contains TEXT |
 
@@ -189,6 +198,7 @@ spreadsheet formula.
 | Cache | `<cache dir>/gauge-and-grain/` — safe to delete (`gg cache clear`) |
 | Claude Code data | `$CLAUDE_CONFIG_DIR/projects`, else `~/.config/claude/projects` and `~/.claude/projects` |
 | Codex data | `$CODEX_HOME/sessions` and `archived_sessions`, else `~/.codex/…` |
+| Other tools | `GEMINI_HOME`, `QWEN_HOME`, `PI_HOME`, `OPENCODE_HOME`, `KILO_HOME`, `DSH_HOME` ([docs](docs/PROVIDERS.md)) |
 | Test/dev overrides | `GG_CONFIG_DIR`, `GG_CACHE_DIR` |
 
 `<config dir>` / `<cache dir>` are the OS defaults (`~/.config`, `~/.cache`; `~/Library/…` on macOS;
@@ -196,8 +206,8 @@ spreadsheet formula.
 
 ## Known limitations
 
-- **Gemini CLI is not parsed** in this release (detected only); its usage is *not* in the totals, and
-  the report says so. Other tools (Copilot CLI, Cursor, Aider, OpenCode…) are not supported yet.
+- **Only Claude Code and Codex are verified against real logs.** The other tools are experimental (see
+  above). Grok, Copilot, Antigravity and Piebald are not supported; Cursor, Aider and others have no parser.
 - Cost covers **standard-tier list prices only** — batch/flex/priority tiers, long-context surcharges
   and subscription pricing are not modelled. Models without a price are *unpriced*, never guessed.
 - Claude Code **cache write** price is derived from documented multipliers (1.25× 5-minute,
