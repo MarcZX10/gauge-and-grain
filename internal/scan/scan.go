@@ -3,12 +3,14 @@
 package scan
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/gob"
 	"encoding/hex"
 	"fmt"
 	"hash/maphash"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -240,7 +242,12 @@ func processFile(ctx context.Context, j job, cacheDir string) (*entry, bool, err
 	if cacheDir != "" {
 		cp = cachePath(cacheDir, j.p, j.path)
 		if c, ok := loadEntry(cp); ok && c.Schema == schemaVersion && c.Parser == j.p.ParserVersion() {
-			if c.Size == st.Size() && c.ModNano == st.ModTime().UnixNano() {
+			size, mod := st.Size(), st.ModTime().UnixNano()
+			if pr, ok := j.p.(providers.PathReader); ok && pr.ReadsPath(j.path) {
+				ws, wm := sidecar(j.path)
+				size, mod = size+ws, max(mod, wm)
+			}
+			if c.Size == size && c.ModNano == mod {
 				return c, true, nil
 			}
 			prev = c
@@ -266,6 +273,12 @@ func processFile(ctx context.Context, j job, cacheDir string) (*entry, bool, err
 	if _, err := f.Seek(start, 0); err != nil {
 		return nil, false, err
 	}
+	if pr, ok := j.p.(providers.PathReader); ok && pr.ReadsPath(j.path) {
+		return pathReader(ctx, j, pr, st, cp)
+	}
+	if wf, ok := j.p.(providers.WholeFiler); ok && wf.WholeFile(j.path) {
+		return wholeFile(ctx, j, f, st, cp)
+	}
 	ps := j.p.NewParser(j.path, resume)
 	var rs model.ParseStats
 	// A file idle for a couple of minutes will not grow a half-written
@@ -282,6 +295,63 @@ func processFile(ctx context.Context, j job, cacheDir string) (*entry, bool, err
 		Offset: off, State: ps.State(), Events: evs, Stats: stats}
 	e.Head = fingerprint(f, 0, min(fpLen, off))
 	e.Tail = fingerprint(f, max(0, off-fpLen), min(fpLen, off))
+	if cp != "" {
+		saveEntry(cp, e)
+	}
+	return e, false, nil
+}
+
+// walSize and walMod fold a SQLite "-wal" sidecar into a database's cache
+// key: recent writes live there until a checkpoint, so the main file alone
+// can look unchanged while its content has moved on.
+func sidecar(path string) (size, mod int64) {
+	if ws, err := os.Stat(path + "-wal"); err == nil {
+		return ws.Size(), ws.ModTime().UnixNano()
+	}
+	return 0, 0
+}
+
+// pathReader lets a provider open its own file (SQLite).
+func pathReader(ctx context.Context, j job, pr providers.PathReader, st os.FileInfo, cp string) (*entry, bool, error) {
+	evs, stats, err := pr.ParsePath(ctx, j.path)
+	if err != nil {
+		return nil, false, err
+	}
+	ws, wm := sidecar(j.path)
+	e := &entry{Schema: schemaVersion, Parser: j.p.ParserVersion(), Size: st.Size() + ws, ModNano: max(st.ModTime().UnixNano(), wm), Events: evs, Stats: stats}
+	if cp != "" {
+		saveEntry(cp, e)
+	}
+	return e, false, nil
+}
+
+// maxWholeFile bounds a single-document log. Larger files are skipped and
+// counted as oversized rather than read into memory.
+const maxWholeFile = 256 << 20
+
+// wholeFile parses a single-document log (one JSON value per file).
+func wholeFile(ctx context.Context, j job, f *os.File, st os.FileInfo, cp string) (*entry, bool, error) {
+	ps := j.p.NewParser(j.path, nil)
+	var stats model.ParseStats
+	if st.Size() > maxWholeFile {
+		stats.Oversized++
+		e := &entry{Schema: schemaVersion, Parser: j.p.ParserVersion(), Size: st.Size(), ModNano: st.ModTime().UnixNano(), Stats: stats}
+		if cp != "" {
+			saveEntry(cp, e)
+		}
+		return e, false, nil
+	}
+	data, err := io.ReadAll(&ctxReader{ctx, f})
+	if err != nil {
+		return nil, false, err
+	}
+	if t := bytes.TrimSpace(data); len(t) > 0 {
+		ps.Line(t)
+	}
+	evs, stats2 := ps.Result()
+	stats2.Oversized += stats.Oversized
+	// Offset 0: a changed document is always re-read in full, never resumed.
+	e := &entry{Schema: schemaVersion, Parser: j.p.ParserVersion(), Size: st.Size(), ModNano: st.ModTime().UnixNano(), Events: evs, Stats: stats2}
 	if cp != "" {
 		saveEntry(cp, e)
 	}

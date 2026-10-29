@@ -2,8 +2,10 @@ package scan
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io"
+	_ "modernc.org/sqlite"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -304,5 +306,64 @@ func TestLargeHistory(t *testing.T) {
 	t.Logf("warm %v", warm)
 	if r2.Parsed != 0 || total(r2.Events) != total(r.Events) {
 		t.Errorf("warm run parsed %d files", r2.Parsed)
+	}
+}
+
+func TestSQLiteSourceIsCachedAndInvalidatedOnChange(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("OPENCODE_HOME", dir)
+	t.Setenv("KILO_HOME", filepath.Join(dir, "nokilo"))
+	db, err := sql.Open("sqlite", filepath.Join(dir, "opencode.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	exec := func(q string) {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(q, err)
+		}
+	}
+	exec(`CREATE TABLE message(id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT)`)
+	msg := func(id string, out int) {
+		exec(fmt.Sprintf(`INSERT INTO message VALUES ('%s','s1',1790100000000,'{"role":"assistant","modelID":"gpt-5","time":{"created":1790100000000},"tokens":{"input":1,"output":%d}}')`, id, out))
+	}
+	msg("a", 10)
+	provs := []providers.Provider{providers.ByID("opencode")}
+	o := Options{Providers: provs, CacheDir: t.TempDir()}
+	r1 := Run(context.Background(), o)
+	if r1.Parsed != 1 || total(r1.Events) != 11 || len(r1.Errors) != 0 {
+		t.Fatalf("first: parsed=%d total=%d errors=%v", r1.Parsed, total(r1.Events), r1.Errors)
+	}
+	if r2 := Run(context.Background(), o); r2.Cached != 1 || total(r2.Events) != 11 {
+		t.Fatalf("unchanged database must come from the cache: %+v", r2)
+	}
+	time.Sleep(20 * time.Millisecond)
+	msg("b", 100)
+	if r3 := Run(context.Background(), o); r3.Parsed != 1 || total(r3.Events) != 11+101 {
+		t.Fatalf("changed database must be re-read: parsed=%d total=%d", r3.Parsed, total(r3.Events))
+	}
+}
+
+func TestVSCodeExtensionTasksAreCachedAsWholeDocuments(t *testing.T) {
+	user := t.TempDir()
+	t.Setenv("GG_VSCODE_USER_DIRS", user)
+	task := filepath.Join(user, "globalStorage", "saoudrizwan.claude-dev", "tasks", "1790000000000")
+	os.MkdirAll(task, 0o755)
+	write := func(extra string) {
+		doc := `[{"ts":1790000001000,"type":"say","say":"api_req_started","text":"{\"tokensIn\":10,\"tokensOut\":5}"}` + extra + `]`
+		os.WriteFile(filepath.Join(task, "ui_messages.json"), []byte(doc), 0o644)
+	}
+	write("")
+	o := Options{Providers: []providers.Provider{providers.ByID("cline")}, CacheDir: t.TempDir()}
+	if r := Run(context.Background(), o); r.Parsed != 1 || total(r.Events) != 15 {
+		t.Fatalf("%+v", r)
+	}
+	if r := Run(context.Background(), o); r.Cached != 1 {
+		t.Fatalf("second run should be cached: %+v", r)
+	}
+	time.Sleep(20 * time.Millisecond)
+	write(`,{"ts":1790000009000,"type":"say","say":"api_req_started","text":"{\"tokensIn\":1,\"tokensOut\":1}"}`)
+	if r := Run(context.Background(), o); r.Parsed != 1 || total(r.Events) != 17 {
+		t.Fatalf("a changed document is re-read in full: %+v total=%d", r.Parsed, total(r.Events))
 	}
 }

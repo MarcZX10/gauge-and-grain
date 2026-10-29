@@ -1,0 +1,8 @@
+[
+ {"ts":1790000000100,"type":"say","say":"text","text":"hello"},
+ {"ts":1790000001000,"type":"say","say":"api_req_started","text":"{\"request\":\"x\",\"tokensIn\":100,\"tokensOut\":50,\"cacheWrites\":200,\"cacheReads\":300,\"cost\":0.5}"},
+ {"ts":1790000002000,"type":"say","say":"api_req_started","text":"{\"request\":\"x\"}"},
+ {"ts":1790000003000,"type":"say","say":"api_req_started","text":"{\"request\":\"x\",\"tokensIn\":9,\"tokensOut\":9,\"cancelReason\":\"user_cancelled\"}"},
+ {"ts":1790000004000,"type":"say","say":"api_req_started","text":"{\"request\":\"x\",\"tokensIn\":7,\"tokensOut\":3,\"cacheWrites\":0,\"cacheReads\":0,\"cost\":0.1}"},
+ {"ts":1790000005000,"type":"say","say":"api_req_started","text":"not json"}
+]

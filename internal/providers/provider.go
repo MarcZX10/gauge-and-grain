@@ -5,6 +5,7 @@ package providers
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -51,6 +52,31 @@ type Provider interface {
 	Fields() Fields
 }
 
+// WholeFiler is implemented by providers whose files are one JSON document
+// (not line-delimited). For those paths the scanner reads the file and
+// passes its whole content to Parser.Line once; such files are re-parsed in
+// full whenever they change.
+type WholeFiler interface {
+	WholeFile(path string) bool
+}
+
+// PathReader is implemented by providers whose files cannot be read as
+// bytes (SQLite databases): the provider opens the path itself. The scanner
+// treats such a file like a whole document (re-read in full when it changes,
+// including a "-wal" sidecar).
+type PathReader interface {
+	ReadsPath(path string) bool
+	ParsePath(ctx context.Context, path string) ([]model.Event, model.ParseStats, error)
+}
+
+// Experimental is implemented by providers whose parser follows a
+// documented or third-party description of the format and has not been
+// verified against real logs. The report says so wherever their data shows
+// up, so nobody mistakes it for a verified number.
+type Experimental interface {
+	Experimental() string
+}
+
 // Parser consumes one file line by line. It is created per file and must be
 // safe to resume: State() captures everything beyond the emitted events
 // that is needed to continue after the last consumed line.
@@ -77,6 +103,30 @@ func ParseAll(p Provider, path string, r io.Reader) ([]model.Event, model.ParseS
 	return evs, pst, err
 }
 
+// ParseFile parses one file from disk the way the scanner does, including
+// providers whose files are a single JSON document. For tests and tools.
+func ParseFile(p Provider, path string) ([]model.Event, model.ParseStats, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, model.ParseStats{}, err
+	}
+	defer f.Close()
+	if pr, ok := p.(PathReader); ok && pr.ReadsPath(path) {
+		return pr.ParsePath(context.Background(), path)
+	}
+	if wf, ok := p.(WholeFiler); ok && wf.WholeFile(path) {
+		data, err := io.ReadAll(f)
+		if err != nil {
+			return nil, model.ParseStats{}, err
+		}
+		ps := p.NewParser(path, nil)
+		ps.Line(bytes.TrimSpace(data))
+		evs, st := ps.Result()
+		return evs, st, nil
+	}
+	return ParseAll(p, path, f)
+}
+
 // Fields states what a provider can report. Used to keep comparisons honest.
 type Fields struct {
 	CacheRead, CacheWrite, Reasoning bool
@@ -84,7 +134,16 @@ type Fields struct {
 }
 
 // All returns every known provider in display order.
-func All() []Provider { return []Provider{Claude{}, Codex{}, Gemini{}} }
+func All() []Provider {
+	ps := []Provider{Claude{}, Codex{}, Gemini{}, Qwen{}, Pi{}, DeepSeek{}}
+	for _, o := range opencodeFamily {
+		ps = append(ps, o)
+	}
+	for _, e := range vscodeExts {
+		ps = append(ps, e)
+	}
+	return ps
+}
 
 // ByID finds a provider.
 func ByID(id string) Provider {

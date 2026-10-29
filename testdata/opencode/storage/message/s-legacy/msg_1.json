@@ -1,0 +1,1 @@
+{"id":"msg_1","sessionID":"s-legacy","role":"assistant","modelID":"gpt-5","time":{"created":1790200000000},"tokens":{"input":7,"output":3,"reasoning":0,"cache":{"read":2,"write":0}},"path":{"cwd":"/work/legacy","root":"/work/legacy"}}

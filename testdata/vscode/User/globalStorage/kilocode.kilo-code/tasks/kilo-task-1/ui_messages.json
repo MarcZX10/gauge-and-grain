@@ -1,0 +1,2 @@
+[{"ts":1790002000000,"type":"say","say":"api_req_started","text":"{\"apiProtocol\":\"openai\",\"tokensIn\":40,\"tokensOut\":4,\"cacheWrites\":0,\"cacheReads\":0,\"usage_missing\":true}"},
+ {"ts":1790002001000,"type":"say","say":"api_req_started","text":"{\"apiProtocol\":\"openai\",\"tokensIn\":20,\"tokensOut\":2,\"cacheWrites\":1,\"cacheReads\":2,\"cost\":0.0}"}]

@@ -184,21 +184,19 @@ func TestReadLinesSkipsOversizedLinesAndCountsThem(t *testing.T) {
 	}
 }
 
-func TestGeminiIsDetectedButNeverParsed(t *testing.T) {
-	g := Gemini{}
-	if g.ParserVersion() != 0 || g.Files() != nil || g.NewParser("", nil) != nil {
-		t.Error("Gemini must not claim to parse anything in this release")
-	}
-}
-
 func FuzzParsersNeverPanic(f *testing.F) {
 	for _, s := range []string{`{"type":"assistant","usage":1}`, `{"type":"token_usage_record","payload":{"usage":{"input_tokens":1e999}}}`, `[]`, `null`, "\x00\xff", `{"payload":{"info":{"total_token_usage":null}}} token_count`} {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, s string) {
-		for _, p := range []Provider{Claude{}, Codex{}} {
+		for _, p := range []Provider{Claude{}, Codex{}, Gemini{}, Qwen{}, Pi{}, vscodeExts[0], vscodeExts[1]} {
 			if _, _, err := ParseAll(p, "x.jsonl", strings.NewReader(s+"\n"+s)); err != nil {
 				t.Fatal(err)
+			}
+			if wf, ok := p.(WholeFiler); ok && wf.WholeFile("x.json") { // single-document parsers get arbitrary bytes too
+				ps := p.NewParser("x.json", nil)
+				ps.Line([]byte(s))
+				ps.Result()
 			}
 		}
 	})

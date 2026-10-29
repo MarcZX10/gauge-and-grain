@@ -286,25 +286,3 @@ func itoa(v int64) string {
 	b, _ := json.Marshal(v)
 	return string(b)
 }
-
-// Gemini is detection-only: this release does not parse Gemini CLI logs
-// because no verified sample of its local usage format was available.
-type Gemini struct{}
-
-func (Gemini) ID() string                       { return "gemini" }
-func (Gemini) Name() string                     { return "Gemini CLI" }
-func (Gemini) ParserVersion() int               { return 0 }
-func (Gemini) Fields() Fields                   { return Fields{} }
-func (Gemini) Files() []string                  { return nil }
-func (Gemini) NewParser(string, *Resume) Parser { return nil }
-
-func (Gemini) Detect() Detection {
-	d := Detection{Dirs: existingDirs([]string{filepath.Join(home(), ".gemini", "tmp")})}
-	if len(d.Dirs) == 0 {
-		d.Detail = "no ~/.gemini/tmp (Gemini CLI not installed or never used)"
-		return d
-	}
-	d.Status = Unsupported
-	d.Detail = "data directory exists, but this release has no verified parser for it; its usage is NOT in the totals"
-	return d
-}

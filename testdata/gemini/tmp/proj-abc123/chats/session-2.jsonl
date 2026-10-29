@@ -1,0 +1,5 @@
+{"sessionId":"g-sess-2","startTime":"2026-10-04T10:00:00.000Z"}
+{"id":"a1","type":"gemini","timestamp":"2026-10-04T10:00:00.000Z","model":"gemini-2.5-pro","tokens":{"input":100,"output":10,"cached":0,"thoughts":0,"tool":0,"total":110}}
+{"id":"a1","type":"gemini","timestamp":"2026-10-04T10:00:00.000Z","model":"gemini-2.5-pro","tokens":{"input":100,"output":40,"cached":0,"thoughts":0,"tool":0,"total":140}}
+{"$set":{"messages":[{"id":"a2","type":"gemini","timestamp":"2026-10-04T10:05:00.000Z","model":"gemini-2.5-pro","tokens":{"input":200,"output":20,"cached":100,"thoughts":5,"tool":0,"total":225}}]}}
+{"id":"a3","type":"gemini","tokens": this is not json

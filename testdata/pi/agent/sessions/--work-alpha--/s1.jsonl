@@ -1,0 +1,7 @@
+{"type":"session","id":"pi-1","timestamp":"2026-10-06T07:00:00.000Z","cwd":"/work/alpha","provider":"anthropic","modelId":"claude-sonnet-5-5"}
+{"type":"message","timestamp":"2026-10-06T07:00:01.000Z","message":{"role":"user","content":"hi","timestamp":1790000001000}}
+{"type":"message","timestamp":"2026-10-06T07:00:10.000Z","message":{"role":"assistant","provider":"anthropic","model":"claude-sonnet-5-5","timestamp":1790000010000,"usage":{"input":10,"output":200,"cacheRead":5000,"cacheWrite":300,"cost":{"total":0.01}}}}
+{"type":"model_change","timestamp":"2026-10-06T07:04:00.000Z","provider":"openai","modelId":"gpt-5.4"}
+{"type":"message","timestamp":"2026-10-06T07:05:00.000Z","message":{"role":"assistant","timestamp":1790000300000,"usage":{"input":100,"output":50}}}
+{"type":"message","timestamp":"2026-10-06T07:05:00.000Z","message":{"role":"assistant","timestamp":1790000300000,"usage":{"input":100,"output":50}}}
+{"type":"message","timestamp":"2026-10-06T07:06:00.000Z","message":{"role":"toolResult","usage":{"input":999,"output":999}}}

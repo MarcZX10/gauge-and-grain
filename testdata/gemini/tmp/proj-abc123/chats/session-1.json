@@ -1,0 +1,7 @@
+{"sessionId":"g-sess-1","projectHash":"abc123","startTime":"2026-10-03T09:00:00.000Z","lastUpdated":"2026-10-03T09:02:00.000Z","messages":[
+ {"id":"m1","timestamp":"2026-10-03T09:00:00.000Z","type":"user","content":[{"text":"hi"}]},
+ {"id":"m2","timestamp":"2026-10-03T09:00:05.000Z","type":"gemini","content":"yo","model":"gemini-2.5-pro","thoughts":[],"tokens":{"input":1000,"output":100,"cached":600,"thoughts":50,"tool":20,"total":1170},"toolCalls":[]},
+ {"id":"m3","timestamp":"2026-10-03T09:01:00.000Z","type":"gemini","model":"gemini-2.5-flash","tokens":{"input":500,"output":10,"cached":900,"thoughts":0,"tool":0,"total":510}},
+ {"id":"m4","timestamp":"2026-10-03T09:02:00.000Z","type":"gemini","model":"gemini-2.5-flash"},
+ {"id":"m5","timestamp":"bad","type":"gemini","model":"x","tokens":{"input":1}}
+]}

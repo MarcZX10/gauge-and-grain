@@ -1,0 +1,5 @@
+{"uuid":"u1","type":"user","timestamp":"2026-10-05T08:00:00Z","message":{"parts":[{"text":"hi"}]}}
+{"uuid":"u2","type":"assistant","timestamp":"2026-10-05T08:00:05Z","model":"qwen3-coder-plus","usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":100,"thoughtsTokenCount":30,"cachedContentTokenCount":400,"totalTokenCount":1130}}
+{"uuid":"u2","type":"assistant","timestamp":"2026-10-05T08:00:05Z","model":"qwen3-coder-plus","usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":100,"thoughtsTokenCount":30,"cachedContentTokenCount":400,"totalTokenCount":1130}}
+{"uuid":"u3","type":"assistant","timestamp":"2026-10-05T08:01:00Z","model":"qwen3-coder-plus","usageMetadata":{"promptTokenCount":50,"candidatesTokenCount":5,"cachedContentTokenCount":80}}
+{"uuid":"u4","type":"assistant","timestamp":"nope","usageMetadata":{"promptTokenCount":1}}
