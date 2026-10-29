@@ -1,6 +1,8 @@
 package agg
 
 import (
+	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -107,5 +109,97 @@ func TestCoverageReflectsReportedFieldsOnly(t *testing.T) {
 	cov := Summarize([]model.Event{a, b}, Filter{}, pt, utc).Coverage()
 	if len(cov) != 1 || cov[0].Events != 2 || cov[0].CacheRead != 1 || cov[0].Reasoning != 0 {
 		t.Errorf("%+v", cov)
+	}
+}
+
+// The index must give exactly what a naive per-event pass gives, for any
+// filter and time zone (day granularity).
+func TestIndexEqualsNaivePerEventSummary(t *testing.T) {
+	pt, _ := pricing.Load("")
+	zones := []*time.Location{time.UTC, time.FixedZone("JST", 9*3600), time.FixedZone("PST", -8*3600)}
+	models := []string{"claude-sonnet-5-5", "gpt-5.4", "mystery", "claude-opus-5-5"}
+	provs := []string{"claude", "codex"}
+	projs := []string{"/w/alpha", "/w/beta", "/x/Gamma", ""}
+	rnd := uint64(88172645463325252)
+	next := func(n int) int {
+		rnd ^= rnd << 13
+		rnd ^= rnd >> 7
+		rnd ^= rnd << 17
+		return int(rnd % uint64(n))
+	}
+	var evs []model.Event
+	for i := 0; i < 6000; i++ {
+		evs = append(evs, model.Event{
+			Provider: provs[next(2)], Model: models[next(4)], Project: projs[next(4)], Session: fmt.Sprint("s", next(40)),
+			Time:  time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(next(60*24*60)) * time.Minute),
+			Input: int64(next(1000)), CacheRead: int64(next(1000)), CacheWrite: int64(next(500)), CacheWrite1h: int64(next(100)),
+			Output: int64(next(300)), Reasoning: int64(next(50)), Has: uint8(next(8)),
+		})
+	}
+	for _, loc := range zones {
+		idx := NewIndex(evs, pt, loc)
+		for n := 0; n < 40; n++ {
+			from := time.Date(2026, 9, 1+next(40), 0, 0, 0, 0, loc)
+			f := Filter{From: from, To: from.AddDate(0, 0, 1+next(20))}
+			if next(3) == 0 {
+				f = Filter{}
+			}
+			if next(2) == 0 {
+				f.Providers = []string{provs[next(2)]}
+			}
+			if next(3) == 0 {
+				f.Models = []string{[]string{"GPT", "opus"}[next(2)]}
+			}
+			if next(3) == 0 {
+				f.Projects = []string{"alpha"}
+			}
+			if next(4) == 0 {
+				f.Text = "s1"
+			}
+			got := idx.Summarize(f)
+			var want Group
+			wantSess := map[string]bool{}
+			var wantCost float64
+			var wantUnpriced int64
+			for i := range evs {
+				e := &evs[i]
+				if !f.Match(e) {
+					continue
+				}
+				// Filter.Match works on instants; the index on civil days in loc. Equivalent for day-aligned bounds.
+				want.Events++
+				want.Input += e.Input
+				want.Output += e.Output
+				want.CacheRead += e.CacheRead
+				want.CacheWrite += e.CacheWrite
+				wantSess[e.Provider+"/"+e.Session] = true
+				if p := pt.Lookup(e.Model); p != nil {
+					wantCost += p.Cost(e)
+				} else {
+					wantUnpriced += e.Total()
+				}
+			}
+			g := got.Total
+			if g.Events != want.Events || g.Input != want.Input || g.Output != want.Output || g.CacheRead != want.CacheRead ||
+				g.CacheWrite != want.CacheWrite || len(g.Sessions) != len(wantSess) || g.UnpricedTok != wantUnpriced ||
+				math.Abs(g.Cost-wantCost) > 1e-6*math.Max(1, wantCost) {
+				t.Fatalf("%s filter %+v:\n index %+v\n naive events=%d in=%d out=%d cr=%d cw=%d sess=%d unpriced=%d cost=%v",
+					loc, f, *g, want.Events, want.Input, want.Output, want.CacheRead, want.CacheWrite, len(wantSess), wantUnpriced, wantCost)
+			}
+		}
+	}
+}
+
+func BenchmarkSummarizeIndexed(b *testing.B) {
+	pt, _ := pricing.Load("")
+	var evs []model.Event
+	for i := 0; i < 300000; i++ {
+		evs = append(evs, model.Event{Provider: "codex", Model: "gpt-5.4", Project: "/w/p", Session: fmt.Sprint("s", i%300),
+			Time: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(i%40000) * time.Minute), Input: 10, Output: 5})
+	}
+	idx := NewIndex(evs, pt, time.UTC)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		idx.Summarize(Filter{})
 	}
 }

@@ -19,6 +19,10 @@ type Filter struct {
 	Models    []string // case-insensitive substrings, any may match
 	Projects  []string // case-insensitive substrings of the project path
 	Text      string   // free text: matches model, project or session (TUI search)
+	// PrevFrom/PrevTo override the comparison window (exclusive end). Left
+	// zero, the comparison is the window of equal length just before From.
+	// Calendar periods use it so "this month" compares with the last whole month.
+	PrevFrom, PrevTo time.Time
 }
 
 // Match reports whether e passes the filter.
@@ -107,34 +111,32 @@ func newGroup(k, l string) *Group {
 		Providers: map[string]struct{}{}, Unpriced: map[string]int64{}}
 }
 
-func (g *Group) add(e *model.Event, pt *pricing.Table) {
-	g.Events++
-	g.Input += e.Input
-	g.CacheRead += e.CacheRead
-	g.CacheWrite += e.CacheWrite
-	g.Output += e.Output
-	g.Reasoning += e.Reasoning
-	g.Has |= e.Has
-	for i, bit := range [3]uint8{model.HasCacheRead, model.HasCacheWrite, model.HasReasoning} {
-		if e.Has&bit != 0 {
-			g.HasCount[i]++
-		}
+func (g *Group) addCell(c *cell) {
+	g.Events += c.events
+	g.Input += c.input
+	g.CacheRead += c.cacheRead
+	g.CacheWrite += c.cacheWrite
+	g.Output += c.output
+	g.Reasoning += c.reasoning
+	g.Has |= c.has
+	for i := range g.HasCount {
+		g.HasCount[i] += c.hasCount[i]
 	}
-	if g.First.IsZero() || e.Time.Before(g.First) {
-		g.First = e.Time
+	if g.First.IsZero() || c.first.Before(g.First) {
+		g.First = c.first
 	}
-	if e.Time.After(g.Last) {
-		g.Last = e.Time
+	if c.last.After(g.Last) {
+		g.Last = c.last
 	}
-	g.Sessions[e.Provider+"/"+e.Session] = struct{}{}
-	g.Models[e.Model] = struct{}{}
-	g.Providers[e.Provider] = struct{}{}
-	if p := pt.Lookup(e.Model); p != nil {
-		g.Cost += p.Cost(e)
-		g.PricedTok += e.Total()
+	g.Sessions[c.sessKey] = struct{}{}
+	g.Models[c.model] = struct{}{}
+	g.Providers[c.provider] = struct{}{}
+	if c.priced {
+		g.Cost += c.cost
+		g.PricedTok += c.tokens()
 	} else {
-		g.UnpricedTok += e.Total()
-		g.Unpriced[e.Model] += e.Total()
+		g.UnpricedTok += c.tokens()
+		g.Unpriced[c.model] += c.tokens()
 	}
 }
 
@@ -151,8 +153,193 @@ type Summary struct {
 	Loc        *time.Location
 }
 
-// Summarize groups events that pass f. Day buckets use loc.
+// cell is every event of one (day, provider, model, project, session)
+// folded together. Cost is computed once per cell, not once per event,
+// because all events in a cell share one model and therefore one price.
+type cell struct {
+	day                               int32 // civil day number in the index's zone
+	provider, model, project, sessKey string
+	lowModel, lowProject, lowHay      string
+	input, cacheRead, cacheWrite      int64
+	output, reasoning                 int64
+	cost                              float64
+	priced                            bool
+	has                               uint8
+	hasCount                          [3]int
+	events                            int
+	first, last                       time.Time
+}
+
+func (c *cell) tokens() int64 { return c.input + c.cacheRead + c.cacheWrite + c.output }
+
+// Index pre-aggregates events once so that every filter change, range
+// change or drill-down is a pass over a few thousand cells instead of a
+// pass (with price lookups) over every event.
+//
+// Date filters therefore have day granularity in the index's time zone.
+type Index struct {
+	cells []cell
+	loc   *time.Location
+	days  map[int32]string // day number -> "2006-01-02 Mon"
+}
+
+type cellKey struct {
+	day                        int32
+	provider, model, proj, ses string
+}
+
+// dayNum is the civil day of t in loc, as days since 1970-01-01.
+func dayNum(t time.Time, loc *time.Location) int32 {
+	y, m, d := t.In(loc).Date()
+	return int32(time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Unix() / 86400)
+}
+
+// NewIndex folds events into cells and prices each cell once.
+func NewIndex(events []model.Event, pt *pricing.Table, loc *time.Location) *Index {
+	x := &Index{loc: loc, days: map[int32]string{}}
+	at := map[cellKey]int{}
+	prices := map[string]*pricing.Price{} // model -> price (nil = unpriced)
+	for i := range events {
+		e := &events[i]
+		dn := dayNum(e.Time, loc)
+		k := cellKey{dn, e.Provider, e.Model, e.Project, e.Session}
+		ci, ok := at[k]
+		if !ok {
+			ci = len(x.cells)
+			at[k] = ci
+			x.cells = append(x.cells, cell{
+				day: dn, provider: e.Provider, model: e.Model, project: e.Project, sessKey: e.Provider + "/" + e.Session,
+				lowModel: strings.ToLower(e.Model), lowProject: strings.ToLower(e.Project),
+				lowHay: strings.ToLower(e.Model + "\x00" + e.Project + "\x00" + e.Session),
+				first:  e.Time, last: e.Time,
+			})
+			if _, ok := x.days[dn]; !ok {
+				x.days[dn] = e.Time.In(loc).Format("2006-01-02 Mon")
+			}
+		}
+		c := &x.cells[ci]
+		p, seen := prices[e.Model]
+		if !seen {
+			p = pt.Lookup(e.Model)
+			prices[e.Model] = p
+		}
+		c.priced = p != nil
+		if p != nil {
+			c.cost += p.Cost(e)
+		}
+		c.events++
+		c.input += e.Input
+		c.cacheRead += e.CacheRead
+		c.cacheWrite += e.CacheWrite
+		c.output += e.Output
+		c.reasoning += e.Reasoning
+		c.has |= e.Has
+		for j, bit := range [3]uint8{model.HasCacheRead, model.HasCacheWrite, model.HasReasoning} {
+			if e.Has&bit != 0 {
+				c.hasCount[j]++
+			}
+		}
+		if e.Time.Before(c.first) {
+			c.first = e.Time
+		}
+		if e.Time.After(c.last) {
+			c.last = e.Time
+		}
+	}
+	return x
+}
+
+// Span is the first and last day that has any usage (zero if none).
+func (x *Index) Span() (first, last time.Time) {
+	var lo, hi int32
+	for i := range x.cells {
+		if d := x.cells[i].day; i == 0 || d < lo {
+			lo = d
+		}
+		if d := x.cells[i].day; i == 0 || d > hi {
+			hi = d
+		}
+	}
+	if len(x.cells) == 0 {
+		return
+	}
+	at := func(d int32) time.Time {
+		u := time.Unix(int64(d)*86400, 0).UTC()
+		return time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, x.loc)
+	}
+	return at(lo), at(hi)
+}
+
+// Len is the number of cells (useful for tests and diagnostics).
+func (x *Index) Len() int { return len(x.cells) }
+
+type cellFilter struct {
+	from, to       int32 // [from, to) in day numbers
+	hasFrom, hasTo bool
+	f              *Filter
+	text           string
+	models, projs  []string
+}
+
+func (x *Index) compile(f *Filter) cellFilter {
+	cf := cellFilter{f: f, text: strings.ToLower(f.Text)}
+	if !f.From.IsZero() {
+		cf.from, cf.hasFrom = dayNum(f.From, x.loc), true
+	}
+	if !f.To.IsZero() {
+		cf.to, cf.hasTo = dayNum(f.To, x.loc), true
+		if h, m, s := f.To.In(x.loc).Clock(); h|m|s != 0 { // a bound inside a day includes that day
+			cf.to++
+		}
+	}
+	for _, m := range f.Models {
+		cf.models = append(cf.models, strings.ToLower(m))
+	}
+	for _, p := range f.Projects {
+		cf.projs = append(cf.projs, strings.ToLower(p))
+	}
+	return cf
+}
+
+func (cf *cellFilter) match(c *cell) bool {
+	if cf.hasFrom && c.day < cf.from {
+		return false
+	}
+	if cf.hasTo && c.day >= cf.to {
+		return false
+	}
+	if len(cf.f.Providers) > 0 && !contains(cf.f.Providers, c.provider) {
+		return false
+	}
+	if len(cf.models) > 0 && !anyIn(cf.models, c.lowModel) {
+		return false
+	}
+	if len(cf.projs) > 0 && !anyIn(cf.projs, c.lowProject) {
+		return false
+	}
+	if cf.text != "" && !strings.Contains(c.lowHay, cf.text) {
+		return false
+	}
+	return true
+}
+
+func anyIn(subs []string, s string) bool {
+	for _, v := range subs {
+		if strings.Contains(s, v) {
+			return true
+		}
+	}
+	return false
+}
+
+// Summarize is the one-shot form: index, then summarize.
 func Summarize(events []model.Event, f Filter, pt *pricing.Table, loc *time.Location) *Summary {
+	return NewIndex(events, pt, loc).Summarize(f)
+}
+
+// Summarize groups the cells that pass f. Day buckets use the index's zone.
+func (x *Index) Summarize(f Filter) *Summary {
+	loc := x.loc
 	s := &Summary{Filter: f, Total: newGroup("total", "Total"), Loc: loc}
 	day := map[string]*Group{}
 	prov, mod, proj, sess := map[string]*Group{}, map[string]*Group{}, map[string]*Group{}, map[string]*Group{}
@@ -164,28 +351,34 @@ func Summarize(events []model.Event, f Filter, pt *pricing.Table, loc *time.Loca
 		}
 		return g
 	}
+	cf := x.compile(&f)
+	var prevCF cellFilter
 	var prevF Filter
 	if !f.From.IsZero() && !f.To.IsZero() {
 		d := f.To.Sub(f.From)
 		prevF = f
 		prevF.From, prevF.To = f.From.Add(-d), f.From
+		if !f.PrevFrom.IsZero() && !f.PrevTo.IsZero() {
+			prevF.From, prevF.To = f.PrevFrom, f.PrevTo
+		}
+		prevCF = x.compile(&prevF)
 		s.Prev = newGroup("prev", "Previous period")
 	}
-	for i := range events {
-		e := &events[i]
-		if s.Prev != nil && prevF.Match(e) {
-			s.Prev.add(e, pt)
+	for i := range x.cells {
+		c := &x.cells[i]
+		if s.Prev != nil && prevCF.match(c) {
+			s.Prev.addCell(c)
 		}
-		if !f.Match(e) {
+		if !cf.match(c) {
 			continue
 		}
-		s.Total.add(e, pt)
-		d := e.Time.In(loc).Format("2006-01-02")
-		get(day, d, d+" "+e.Time.In(loc).Format("Mon")).add(e, pt)
-		get(prov, e.Provider, e.Provider).add(e, pt)
-		get(mod, e.Provider+"/"+e.Model, e.Model).add(e, pt)
-		get(proj, e.Project, ProjectLabel(e.Project)).add(e, pt)
-		get(sess, e.Provider+"/"+e.Session, ShortID(e.Session)).add(e, pt)
+		s.Total.addCell(c)
+		dl := x.days[c.day]
+		get(day, dl[:10], dl).addCell(c)
+		get(prov, c.provider, c.provider).addCell(c)
+		get(mod, c.provider+"/"+c.model, c.model).addCell(c)
+		get(proj, c.project, ProjectLabel(c.project)).addCell(c)
+		get(sess, c.sessKey, ShortID(strings.TrimPrefix(c.sessKey, c.provider+"/"))).addCell(c)
 	}
 	s.ByDay = fillDays(day, f, loc)
 	s.ByProvider, s.ByModel, s.ByProject, s.BySession = sorted(prov), sorted(mod), sorted(proj), sorted(sess)
