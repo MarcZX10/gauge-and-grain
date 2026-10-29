@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -298,6 +299,164 @@ func TestInteractionsAreFastOnLargeHistory(t *testing.T) {
 		_ = m.View()
 		if el := time.Since(start); el > 400*time.Millisecond {
 			t.Errorf("key %q took %v on 200k events", k, el)
+		}
+	}
+}
+
+// colWithCode returns the screen columns whose cell is drawn with the
+// given 256-colour foreground in one rendered line.
+func colsWithColour(line string, colour int) []int {
+	code := fmt.Sprintf("\x1b[38;5;%dm", colour)
+	var cols []int
+	col := 0
+	for i := 0; i < len(line); {
+		if strings.HasPrefix(line[i:], code) {
+			j := strings.Index(line[i:], "m") + i + 1
+			end := strings.Index(line[j:], "\x1b")
+			if end < 0 {
+				end = len(line) - j
+			}
+			for k := 0; k < render.Width(line[j:j+end]); k++ {
+				cols = append(cols, col+k)
+			}
+			i = j
+			continue
+		}
+		if line[i] == 0x1b {
+			i = i + strings.Index(line[i:], "m") + 1
+			continue
+		}
+		_, size := utf8.DecodeRuneInString(line[i:])
+		col++
+		i += size
+	}
+	return cols
+}
+
+func TestDailySelectedAndHoveredDayHasItsOwnBarColour(t *testing.T) {
+	m := fixtureModel(t, render.Theme{Color: true})
+	resize(m, 120, 40)
+	press(m, "2")
+	lines := strings.Split(m.View(), "\n")
+	g := m.geometry()
+	chartRows := lines[bodyTop+1 : bodyTop+1+g.chartH-3]
+	count := func() (cols map[int]bool) {
+		cols = map[int]bool{}
+		for _, l := range chartRows {
+			for _, c := range colsWithColour(l, render.CSelect) {
+				cols[c] = true
+			}
+		}
+		return
+	}
+	first := count()
+	if len(first) == 0 {
+		t.Fatal("the selected day must be drawn in its own colour")
+	}
+	// move the pointer over another day: the highlight follows it
+	n := len(m.sum.ByDay)
+	target := 0
+	if m.cursor[tabDaily] == n-1-0 {
+		target = n - 1
+	}
+	var x int
+	for x = 2; x < m.width-2; x++ {
+		if m.chartDayAt(x, bodyTop+2) == target {
+			break
+		}
+	}
+	m.Update(tea.MouseMsg{X: x, Y: bodyTop + 2, Button: tea.MouseButtonNone, Action: tea.MouseActionMotion})
+	if got := n - 1 - m.cursor[tabDaily]; got != target {
+		t.Fatalf("hovering chart day %d selected day %d", target, got)
+	}
+	lines = strings.Split(m.View(), "\n")
+	moved := map[int]bool{}
+	for _, l := range lines[bodyTop+1 : bodyTop+1+g.chartH-3] {
+		for _, c := range colsWithColour(l, render.CSelect) {
+			moved[c] = true
+		}
+	}
+	for c := range moved {
+		if c < 2 || c >= m.width-2 {
+			t.Errorf("highlight escaped the chart at column %d", c)
+		}
+	}
+	same := len(moved) == len(first)
+	for c := range moved {
+		same = same && first[c]
+	}
+	if same {
+		t.Error("the highlighted column must move with the pointer")
+	}
+	// clicking a bar selects it, and clicking the selected bar drills in
+	other := (target + 1) % n
+	for x = 2; x < m.width-2 && m.chartDayAt(x, bodyTop+2) != other; x++ {
+	}
+	click := tea.MouseMsg{X: x, Y: bodyTop + 2, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress}
+	m.Update(click)
+	if n-1-m.cursor[tabDaily] != other || m.tab != tabDaily {
+		t.Errorf("click should select day %d", other)
+	}
+	m.Update(click)
+	if m.tab != tabOverview || len(m.drill) != 1 {
+		t.Error("clicking the selected bar again drills into that day")
+	}
+}
+
+func TestHoverIgnoredOutsideDaily(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	press(m, "4")
+	m.cursor[tabModels] = 1
+	m.Update(tea.MouseMsg{X: 5, Y: bodyTop + 2, Button: tea.MouseButtonNone, Action: tea.MouseActionMotion})
+	if m.cursor[tabModels] != 1 {
+		t.Error("pointer motion must not move other lists' cursors")
+	}
+}
+
+func TestCompactOverview(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	full := len(m.scrollLines())
+	press(m, "m")
+	if !m.compact {
+		t.Fatal("m toggles the compact summary")
+	}
+	lines := m.scrollLines()
+	if len(lines) >= full/2 || len(lines) > 9 {
+		t.Errorf("compact overview must be tiny: %d lines vs %d", len(lines), full)
+	}
+	text := strings.Join(strings.Fields(strings.Join(lines, " ")), " ")
+	for _, want := range []string{"tokens", "sessions", "est.", "model"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("compact overview must show %q: %s", want, text)
+		}
+	}
+	for _, not := range []string{"Token mix", "Daily tokens", "Providers"} {
+		if strings.Contains(text, not) {
+			t.Errorf("compact overview must not include %q", not)
+		}
+	}
+	press(m, "m")
+	if m.compact || len(m.scrollLines()) != full {
+		t.Error("m again restores the full overview")
+	}
+}
+
+func TestEveryViewStillFitsInCompactMode(t *testing.T) {
+	for _, th := range []render.Theme{{Color: true}, {ASCII: true}} {
+		m := fixtureModel(t, th)
+		m.compact = true
+		for _, sz := range [][2]int{{40, 8}, {60, 20}, {100, 30}, {200, 50}} {
+			resize(m, sz[0], sz[1])
+			for tab := 0; tab < numTabs; tab++ {
+				m.tab = tab
+				for i, l := range strings.Split(m.View(), "\n") {
+					if render.Width(l) > sz[0] {
+						t.Fatalf("%v tab %d line %d too wide: %q", sz, tab, i, render.Strip(l))
+					}
+				}
+			}
 		}
 	}
 }

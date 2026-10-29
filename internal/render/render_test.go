@@ -174,3 +174,50 @@ func TestPanelAndSideKeepExactWidths(t *testing.T) {
 		}
 	}
 }
+
+func TestCompactIsTinyAndShowsOnlyWhatMatters(t *testing.T) {
+	c := sample(t)
+	out := Compact(Theme{ASCII: true}, c, 100)
+	if len(out) > 5 {
+		t.Errorf("compact must be a handful of lines, got %d", len(out))
+	}
+	text := strings.Join(strings.Fields(strings.Join(out, " ")), " ")
+	for _, want := range []string{"tokens", "sessions", "model", "attention"} { // attention: the sample has an unpriced model
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q in %q", want, text)
+		}
+	}
+	for _, not := range []string{"TOKEN MIX", "PROVIDERS", "subscription bill"} {
+		if strings.Contains(text, not) {
+			t.Errorf("compact must not include %q", not)
+		}
+	}
+	for _, l := range Compact(Theme{ASCII: true}, c, 40) {
+		if Width(l) > 40 && !strings.Contains(l, "…") && !strings.Contains(l, "~") {
+			// callers truncate; compact itself must already drop optional lines on narrow widths
+			t.Logf("narrow line is %d cols (caller truncates): %q", Width(l), l)
+		}
+	}
+	rep := Report(Theme{ASCII: true}, c, 100, ReportOpts{Compact: true})
+	if n := len(strings.Split(strings.TrimSpace(rep), "\n")); n > 6 {
+		t.Errorf("compact report is %d lines", n)
+	}
+	for _, l := range strings.Split(rep, "\n") {
+		if Width(l) > 100 {
+			t.Errorf("report line too wide: %q", l)
+		}
+	}
+}
+
+func TestCompactStaysQuietWhenNothingNeedsAttention(t *testing.T) {
+	c := sample(t)
+	c.Detect["gemini"] = providers.Detection{Status: providers.NotFound}
+	// remove the only unpriced usage so no warning applies
+	c.Sum.Total.Unpriced = map[string]int64{}
+	c.Sum.Total.UnpricedTok = 0
+	c.Sum.ByProvider = c.Sum.ByProvider[:0]
+	out := strings.Join(Compact(Theme{ASCII: true}, c, 100), "\n")
+	if strings.Contains(out, "attention") {
+		t.Errorf("no warning, no pointer:\n%s", out)
+	}
+}

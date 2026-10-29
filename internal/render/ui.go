@@ -16,6 +16,7 @@ const (
 	CWarn   = 214
 	CBad    = 203
 	CMuted  = 244
+	CSelect = 231 // the selected/hovered bar: neutral and high contrast (yellow is reserved for caution)
 	CSelBG  = 24
 
 	CInput      = 110
@@ -221,7 +222,7 @@ func (t Theme) VChart(vals []float64, w, h, sel int, color int) []string {
 			}
 			c := color
 			if i == sel {
-				c = CWarn
+				c = CSelect
 			}
 			sb.WriteString(t.FG(c, strings.Repeat(cell, bw)) + strings.Repeat(" ", span-bw))
 		}

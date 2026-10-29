@@ -516,8 +516,9 @@ func clampInt(v, lo, hi int) int { return max(lo, min(hi, v)) }
 
 // ReportOpts selects optional report sections.
 type ReportOpts struct {
-	Daily bool // per-day table
-	Notes bool // full notes instead of the one-line pointer
+	Compact bool // just the headline numbers (see Compact)
+	Daily   bool // per-day table
+	Notes   bool // full notes instead of the one-line pointer
 }
 
 // Report assembles the compact report.
@@ -526,6 +527,13 @@ func Report(t Theme, c *Ctx, width int, o ReportOpts) string {
 		width = 100
 	}
 	width = min(width, 110)
+	if o.Compact {
+		var b strings.Builder
+		for _, l := range append(Header(t, c, width), Compact(t, c, width)...) {
+			b.WriteString(t.Trunc(l, width) + "\n")
+		}
+		return b.String()
+	}
 	var secs [][]string
 	ov := Overview(t, c, width)
 	ov = append(ov, t.Dim(t.Pad("Notes", 10))+NoteLine(t, c, "run `gg notes`"))

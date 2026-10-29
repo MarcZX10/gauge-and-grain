@@ -32,6 +32,7 @@ type Config struct {
 	DaysFlag  int
 	All       bool
 	Bounded   bool // range came from --days/--all, so presets may replace it
+	Compact   bool // start with the tiny summary
 }
 
 const (
@@ -89,6 +90,7 @@ type model_ struct {
 	pickErr string
 	provIdx int // 0 = all
 	drill   []string
+	compact bool
 	idx     *agg.Index
 	sum     *agg.Summary
 	cx      *render.Ctx // rebuilt by recompute; shared by every view
@@ -117,7 +119,8 @@ type startedMsg struct {
 func Run(cfg Config) error {
 	m := &model_{cfg: cfg, filter: cfg.Filter, rangeNm: cfg.RangeName, loading: true, started: time.Now()}
 	m.per = initialPeriod(cfg)
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	m.compact = cfg.Compact
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion())
 	_, err := p.Run()
 	if m.cancel != nil {
 		m.cancel()
@@ -274,6 +277,11 @@ func (m *model_) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.tab = tabOverview
 	case "n":
 		m.tab = tabNotes
+	case "m":
+		m.compact = !m.compact
+		m.offset[tabOverview] = 0
+		m.tab = tabOverview
+		m.ver++ // the cached overview is for the other layout
 	case "up", "k":
 		m.move(-1)
 	case "down", "j":
@@ -328,6 +336,8 @@ func (m *model_) mouse(e tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch {
+	case e.Action == tea.MouseActionMotion && e.Button == tea.MouseButtonNone:
+		m.hover(e.X, e.Y) // pointing at a day or row selects it, so its bar lights up
 	case e.Button == tea.MouseButtonWheelUp:
 		m.move(-3)
 	case e.Button == tea.MouseButtonWheelDown:
@@ -353,6 +363,15 @@ func (m *model_) mouse(e tea.MouseMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		default:
+			if i := m.chartDayAt(e.X, e.Y); i >= 0 { // click a bar: select that day, again to drill in
+				c := len(m.sum.ByDay) - 1 - i
+				if c == m.cursor[m.tab] {
+					m.drillDown()
+				} else {
+					m.selectRow(c)
+				}
+				return m, nil
+			}
 			g := m.geometry()
 			if m.isTable() && e.X < g.tableW {
 				row := e.Y - (g.tableTop + 2) // border, then header
@@ -370,6 +389,65 @@ func (m *model_) mouse(e tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// chartDayAt returns the chronological day index under a cell of the Daily
+// chart, or -1. It mirrors Theme.VChart's layout (value i owns columns
+// [i*w/n, (i+1)*w/n) of the chart's inner area).
+func (m *model_) chartDayAt(x, y int) int {
+	if m.tab != tabDaily || m.sum == nil {
+		return -1
+	}
+	g := m.geometry()
+	h := g.chartH - 3
+	if g.chartH == 0 || y < bodyTop+1 || y >= bodyTop+1+h {
+		return -1
+	}
+	w, n := m.width-4, len(m.sum.ByDay)
+	c := x - 2 // border + one space
+	if n == 0 || n > w || c < 0 || c >= w {
+		return -1
+	}
+	for i := 0; i < n; i++ {
+		if (i+1)*w/n > c {
+			return i
+		}
+	}
+	return -1
+}
+
+// selectRow moves the cursor of the current table and keeps it in view.
+func (m *model_) selectRow(c int) {
+	n := len(m.groups())
+	if n == 0 {
+		return
+	}
+	m.cursor[m.tab] = max(0, min(c, n-1))
+	vis := max(1, m.geometry().vis)
+	if m.cursor[m.tab] < m.offset[m.tab] {
+		m.offset[m.tab] = m.cursor[m.tab]
+	}
+	if m.cursor[m.tab] >= m.offset[m.tab]+vis {
+		m.offset[m.tab] = m.cursor[m.tab] - vis + 1
+	}
+}
+
+// hover selects what the pointer is over: a bar of the Daily chart, or a
+// row of the Daily table.
+func (m *model_) hover(x, y int) {
+	if m.tab != tabDaily {
+		return
+	}
+	if i := m.chartDayAt(x, y); i >= 0 {
+		m.selectRow(len(m.sum.ByDay) - 1 - i)
+		return
+	}
+	g := m.geometry()
+	if x < g.tableW {
+		if row := y - (g.tableTop + 2); row >= 0 && row < g.vis && m.offset[m.tab]+row < len(m.groups()) {
+			m.selectRow(m.offset[m.tab] + row)
+		}
+	}
 }
 
 // ---- state changes -------------------------------------------------------
@@ -904,6 +982,9 @@ func (m *model_) scrollView() []string {
 }
 
 func (m *model_) overviewLines() []string {
+	if m.compact {
+		return m.compactLines()
+	}
 	t, W, c, s := m.cfg.Theme, m.width, m.ctx(), m.sum
 	tot := s.Total
 	var out []string
@@ -995,6 +1076,16 @@ func (m *model_) overviewLines() []string {
 	}
 	out = append(out, t.Panel("Projects", miniRows(t, s.ByProject, tot.Tokens(), W-4, 5), W, render.CAccent)...)
 	return out
+}
+
+// compactLines is the tiny summary: the same facts as the overview, in a few lines.
+func (m *model_) compactLines() []string {
+	t := m.cfg.Theme
+	out := []string{""}
+	for _, l := range render.Compact(t, m.ctx(), m.width-2) {
+		out = append(out, "  "+l)
+	}
+	return append(out, "", t.Dim("  m shows the full summary"))
 }
 
 // prevSpan names the comparison window, e.g. "31 Aug – 29 Sep 2026".
@@ -1365,7 +1456,7 @@ func (m *model_) footer() []string {
 		return []string{t.Dim(m.status()), t.Pad(prompt+t.Dim("   Enter apply · Esc cancel · matches model, project or session"), W)}
 	}
 	type hint struct{ key, what string }
-	all := []hint{{"←→", "view"}, {"↑↓", "move"}, {"⏎", "drill"}, {"esc", "back"}, {"t", "period"}, {"[ ]", "shift"}, {"p", "provider"}, {"/", "search"}, {"s", "sort"}, {"n", "notes"}, {"?", "help"}, {"q", "quit"}}
+	all := []hint{{"←→", "view"}, {"↑↓", "move"}, {"⏎", "drill"}, {"esc", "back"}, {"t", "period"}, {"[ ]", "shift"}, {"p", "provider"}, {"/", "search"}, {"s", "sort"}, {"m", "compact"}, {"n", "notes"}, {"?", "help"}, {"q", "quit"}}
 	if !m.isTable() {
 		all[1].what, all[2] = "scroll", hint{"r", "rescan"}
 	}
@@ -1416,10 +1507,11 @@ func (m *model_) helpView() []string {
 		{"p", "cycle the provider filter"},
 		{"/", "search model, project or session text"},
 		{"s", "sort by tokens or by estimated cost"},
+		{"m", "compact: shrink the Overview to the headline numbers (start that way with --compact)"},
 		{"n", "notes: estimates, gaps, unpriced models, sources, prices"},
 		{"c", "clear every filter"},
 		{"r", "rescan files (unchanged files come from the cache)"},
-		{"mouse wheel", "scroll"},
+		{"mouse", "wheel scrolls; click tabs, periods, rows or Daily bars; pointing at a day selects it"},
 		{"q · Ctrl-C", "quit"},
 	}
 	var lines []string

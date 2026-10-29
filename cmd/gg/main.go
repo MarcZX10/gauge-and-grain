@@ -69,6 +69,7 @@ Other:
   --prices FILE   extra/override prices (default: <config dir>/prices.json)
   --daily         (report) add a per-day table
   --notes         (report) append the full notes
+  -c, --compact   tiny summary: the headline numbers only (report; the TUI starts compact; env GG_COMPACT=1)
 
 Everything is read from local files; nothing is sent anywhere.
 `
@@ -92,7 +93,7 @@ type opts struct {
 	prov, models, projects  multi
 	noColor, ascii, noCache bool
 	pricesFile              string
-	daily, notes            bool
+	daily, notes, compact   bool
 	format, by              string
 	unpriced                bool
 }
@@ -112,6 +113,8 @@ func (o *opts) bind(fs *flag.FlagSet) {
 	fs.StringVar(&o.pricesFile, "prices", "", "")
 	fs.BoolVar(&o.daily, "daily", false, "")
 	fs.BoolVar(&o.notes, "notes", false, "")
+	fs.BoolVar(&o.compact, "compact", os.Getenv("GG_COMPACT") != "", "")
+	fs.BoolVar(&o.compact, "c", os.Getenv("GG_COMPACT") != "", "")
 	fs.StringVar(&o.format, "format", "json", "")
 	fs.StringVar(&o.by, "by", "day", "")
 	fs.BoolVar(&o.unpriced, "unpriced", false, "")
@@ -349,7 +352,7 @@ func run(cmd string, o *opts) error {
 		return tui.Run(tui.Config{
 			Providers: provs, Detect: detect, Prices: pt, CacheDir: cd, Filter: f, RangeName: rangeName,
 			Theme: theme(o, os.Stdout), Loc: now.Location(), DaysFlag: o.days, All: o.all,
-			Bounded: o.from == "" && o.to == "",
+			Bounded: o.from == "" && o.to == "", Compact: o.compact,
 		})
 	}
 
@@ -381,7 +384,7 @@ func run(cmd string, o *opts) error {
 		fmt.Println(strings.Join(render.Notes(t, c, termWidth(os.Stdout)), "\n"))
 	default:
 		t := theme(o, os.Stdout)
-		fmt.Print(render.Report(t, c, termWidth(os.Stdout), render.ReportOpts{Daily: o.daily, Notes: o.notes}))
+		fmt.Print(render.Report(t, c, termWidth(os.Stdout), render.ReportOpts{Compact: o.compact, Daily: o.daily, Notes: o.notes}))
 	}
 	if res.Cancelled {
 		os.Exit(130)

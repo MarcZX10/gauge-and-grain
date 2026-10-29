@@ -101,6 +101,17 @@ func TestCLI(t *testing.T) {
 		t.Errorf("default report must only point at the notes:\n%s", out)
 	}
 
+	out, _ = gg(t, bin, home, "report", "--all", "--compact")
+	if n := len(strings.Split(strings.TrimSpace(out), "\n")); n > 6 || !strings.Contains(out, "tokens") || !strings.Contains(out, "sessions") || strings.Contains(out, "TOKEN MIX") {
+		t.Errorf("--compact must print only the headline numbers (%d lines):\n%s", n, out)
+	}
+	if !strings.Contains(out, "attention") { // the fixtures contain an unpriced model
+		t.Errorf("compact still points at notes that need attention:\n%s", out)
+	}
+	if o2, _ := gg(t, bin, home, "report", "-c", "--all"); o2 != out {
+		t.Error("-c is an alias of --compact")
+	}
+
 	out, _ = gg(t, bin, home, "sources")
 	if !strings.Contains(out, "Claude Code") || !strings.Contains(out, "Gemini CLI") {
 		t.Errorf("sources:\n%s", out)
