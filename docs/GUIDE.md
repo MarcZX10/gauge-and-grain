@@ -125,10 +125,9 @@ Active filters appear as chips at the right of the header, so you always know wh
 On a narrow terminal the chips become a count (`2 filters`) and the status line names them. The Notes warning badge
 stays visible on a narrow terminal too.
 
-**Tools** counts the tool calls each reply made in Claude Code transcripts (for example `Bash`, `Read`, or an MCP tool such
+**Tools** counts the tool calls each reply made in Claude Code and Codex transcripts (for example `Bash`, `Read`, or an MCP tool such
 as `mcp__docs__guide`), and lists skills under `skill:<name>`. Each call is attributed to the reply that made it, so the
-counts follow the same period and filters as everything else. Only Claude Code is read for this for now: Codex records its
-tool calls too, but gg does not read them yet.
+counts follow the same period and filters as everything else. The other tools are not read for tool calls yet.
 
 While the first scan runs, `q` quits and `Esc` cancels the scan (finished files stay cached).
 

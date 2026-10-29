@@ -1904,8 +1904,8 @@ func (m *model_) toolsLines() []string {
 		return append(out,
 			"  "+t.Dim("No tool calls in this period."),
 			"",
-			"  "+t.Dim("Claude Code transcripts record which tools and skills each reply used."),
-			"  "+t.Dim("Codex records tool calls too, but gg does not read them yet."))
+			"  "+t.Dim("Claude Code and Codex transcripts record the tools each reply used."),
+			"  "+t.Dim("The other tools are not read for tool calls yet."))
 	}
 	nameW := max(12, min(40, W-34))
 	section := func(title string, list []agg.ToolStat) {
@@ -1919,7 +1919,7 @@ func (m *model_) toolsLines() []string {
 		out = append(out, "")
 	}
 	out = append(out, "  "+t.Bold(fmt.Sprintf("%s tool uses", render.Num(int(total))))+t.Dim(" in "+m.rangeNm),
-		"  "+t.Dim("Claude Code only. A skill is counted under skill:<name>; shares are of all uses."), "")
+		"  "+t.Dim("Claude Code and Codex. A skill is counted under skill:<name>; shares are of all uses."), "")
 	if len(tools) > 0 {
 		section("Tools", tools)
 	}
