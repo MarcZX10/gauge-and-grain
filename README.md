@@ -60,6 +60,7 @@ replacing anything and install to `~/.local/bin` (`%LOCALAPPDATA%\gg\bin` on Win
 gg                       # TUI on a terminal; compact report when piped
 gg report                # compact report, last 30 days
 gg report --days 7       # last week
+gg report --compact      # tiny summary: only the headline numbers (alias -c; env GG_COMPACT=1)
 gg report --from 2026-10-01 --to 2026-10-15
 gg report --provider codex --model gpt-5
 gg report --project my-app --daily
@@ -132,6 +133,7 @@ projects. Providers keep one colour everywhere (Claude orange, Codex blue); yell
 | `p` | cycle provider filter |
 | `/` | search model, project or session text |
 | `s` | sort by tokens or by estimated cost |
+| `m` | **compact** summary: the Overview shrinks to the headline numbers (tokens, cost, sessions, cache, top items, one-line trend, and a warning only if something needs attention). `gg tui --compact` starts that way |
 | `c` | clear every filter |
 | `r` | rescan (cached files are not re-read) |
 | `?` | help · `q` / `Ctrl-C` quit |
@@ -142,7 +144,9 @@ compared with (`▲ 12% vs 31 Aug–29 Sep`). Calendar periods compare with the 
 (this month vs last month), rolling ones with the window of equal length just before.
 
 The **mouse** works too: click a view tab or a period chip (`Today 7d 30d 90d All`, `Pick…` opens the
-picker), click a row to select it (click again to drill in), scroll with the wheel.
+picker), click a row to select it (click again to drill in), scroll with the wheel. On **Daily**, the
+selected day is drawn in its own colour in the bar chart, and pointing at a bar (or a row) selects that
+day, so the chart follows the pointer; click a bar to select it and again to drill into that day.
 
 The first scan of a large history shows a progress panel. **`Esc` cancels cleanly**: files already
 parsed stay cached, you see what was read so far (marked PARTIAL), and the next run resumes. Below
