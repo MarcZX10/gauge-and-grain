@@ -91,7 +91,7 @@ On the command line the equivalent is `--days`, `--from/--to` and `--all`.
 | View | Key | What it shows |
 |---|---|---|
 | Overview | `1` · `o` | Cards (tokens, estimated cost, sessions, cache hits) with change vs the previous period; daily chart; token mix; top providers, models, projects. |
-| Daily | `2` | A bar chart with the selected day highlighted, and a table of every day. |
+| Daily | `2` | An activity calendar (one column per week, shaded by the busiest day; on terminals at least 30 rows tall), a bar chart with the selected day highlighted, and a table of every day. |
 | Providers | `3` | Ranked, with a details panel. |
 | Models | `4` | Same, with `unpriced` / `partial` flags. A model name reported by two tools shows as `gpt-5.4 (codex)` / `gpt-5.4 (opencode)`. |
 | Projects | `5` | Working directory of each session. |
