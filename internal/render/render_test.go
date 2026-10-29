@@ -34,7 +34,7 @@ func sample(t *testing.T) *Ctx {
 func TestPlainReportHasNoEscapeCodesAndStaysWithinWidth(t *testing.T) {
 	c := sample(t)
 	for _, w := range []int{40, 60, 80, 120} {
-		out := Report(Theme{ASCII: true}, c, w, true)
+		out := Report(Theme{ASCII: true}, c, w, ReportOpts{Daily: true, Notes: true})
 		if strings.Contains(out, "\x1b") {
 			t.Fatalf("w=%d: plain output contains escape codes", w)
 		}
@@ -47,7 +47,7 @@ func TestPlainReportHasNoEscapeCodesAndStaysWithinWidth(t *testing.T) {
 }
 
 func TestReportStatesEstimatesGapsAndUnpriced(t *testing.T) {
-	out := strings.Join(strings.Fields(Report(Theme{ASCII: true}, sample(t), 100, false)), " ") // ignore wrapping
+	out := strings.Join(strings.Fields(Report(Theme{ASCII: true}, sample(t), 100, ReportOpts{Notes: true})), " ") // ignore wrapping
 	for _, want := range []string{"not your subscription bill", "codex-auto-review", "Gemini CLI", "not parsed", "2 malformed", "duplicate", "partial"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("report must mention %q:\n%s", want, out)
@@ -59,7 +59,7 @@ func TestReportStatesEstimatesGapsAndUnpriced(t *testing.T) {
 }
 
 func TestColourOnlyWhenEnabled(t *testing.T) {
-	if !strings.Contains(Report(Theme{Color: true}, sample(t), 100, false), "\x1b[") {
+	if !strings.Contains(Report(Theme{Color: true}, sample(t), 100, ReportOpts{}), "\x1b[") {
 		t.Error("colour theme should colour")
 	}
 }
@@ -133,5 +133,44 @@ func TestFormatting(t *testing.T) {
 	}
 	if Width(Theme{Color: true}.Warn("日本")) != 4 {
 		t.Error("wide runes count double and colour codes count zero")
+	}
+}
+
+func TestNotesAreSeparatedFromTheDefaultReportButAlwaysPointedTo(t *testing.T) {
+	c := sample(t)
+	def := strings.Join(strings.Fields(Report(Theme{ASCII: true}, c, 100, ReportOpts{})), " ")
+	if strings.Contains(def, "not your subscription bill. Plans like") {
+		t.Error("full notes must not be inlined in the default report")
+	}
+	if !strings.Contains(def, "attention") || !strings.Contains(def, "gg notes") {
+		t.Errorf("default report must point at the notes (with a warning count):\n%s", def)
+	}
+	warn, all := NoteCounts(c)
+	if warn < 2 || all <= warn { // unpriced model + unsupported Gemini; plus context notes
+		t.Errorf("warn=%d all=%d", warn, all)
+	}
+	if !strings.Contains(strings.Join(strings.Fields(strings.Join(Notes(Theme{ASCII: true}, c, 100), " ")), " "), "not your subscription bill") {
+		t.Error("Notes() must carry the cost caveat")
+	}
+}
+
+func TestPanelAndSideKeepExactWidths(t *testing.T) {
+	th := Theme{Color: true}
+	p := th.Panel("Title that is far too long for this tiny panel", []string{"日本語 wide", th.Warn("coloured text that overflows"), "x"}, 20, CAccent)
+	for _, l := range p {
+		if Width(l) != 20 {
+			t.Errorf("panel line is %d cols: %q", Width(l), Strip(l))
+		}
+	}
+	s := th.Side([]int{20, 10}, 2, p, []string{"a"})
+	for _, l := range s {
+		if Width(l) != 32 {
+			t.Errorf("side line is %d cols", Width(l))
+		}
+	}
+	for _, l := range th.VChart([]float64{1, 5, 0, 9, 3}, 12, 4, 1, CAccent) {
+		if Width(l) > 12 {
+			t.Errorf("chart overflows: %d", Width(l))
+		}
 	}
 }

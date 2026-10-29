@@ -181,7 +181,7 @@ func Summarize(events []model.Event, f Filter, pt *pricing.Table, loc *time.Loca
 		}
 		s.Total.add(e, pt)
 		d := e.Time.In(loc).Format("2006-01-02")
-		get(day, d, d).add(e, pt)
+		get(day, d, d+" "+e.Time.In(loc).Format("Mon")).add(e, pt)
 		get(prov, e.Provider, e.Provider).add(e, pt)
 		get(mod, e.Provider+"/"+e.Model, e.Model).add(e, pt)
 		get(proj, e.Project, ProjectLabel(e.Project)).add(e, pt)
@@ -233,7 +233,7 @@ func fillDays(m map[string]*Group, f Filter, loc *time.Location) []*Group {
 		if g, ok := m[k]; ok {
 			out = append(out, g)
 		} else {
-			out = append(out, newGroup(k, k))
+			out = append(out, newGroup(k, k+" "+d.Format("Mon")))
 		}
 	}
 	return out

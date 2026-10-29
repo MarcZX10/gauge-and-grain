@@ -47,6 +47,7 @@ Usage:
   gg [flags]                 interactive TUI on a terminal, compact report otherwise
   gg report [flags]          compact report
   gg tui [flags]             interactive TUI
+  gg notes [flags]           how far to trust the numbers: estimates, gaps, unpriced models
   gg export [flags]          JSON or CSV export  (--format json|csv, --by day|provider|model|project|session|events)
   gg sources                 which tools were found and what can be read
   gg prices [--unpriced]     price table, sources and dates
@@ -67,6 +68,7 @@ Other:
   --no-cache      do not read or write the incremental cache
   --prices FILE   extra/override prices (default: <config dir>/prices.json)
   --daily         (report) add a per-day table
+  --notes         (report) append the full notes
 
 Everything is read from local files; nothing is sent anywhere.
 `
@@ -90,7 +92,7 @@ type opts struct {
 	prov, models, projects  multi
 	noColor, ascii, noCache bool
 	pricesFile              string
-	daily                   bool
+	daily, notes            bool
 	format, by              string
 	unpriced                bool
 }
@@ -109,6 +111,7 @@ func (o *opts) bind(fs *flag.FlagSet) {
 	fs.BoolVar(&o.noCache, "no-cache", false, "")
 	fs.StringVar(&o.pricesFile, "prices", "", "")
 	fs.BoolVar(&o.daily, "daily", false, "")
+	fs.BoolVar(&o.notes, "notes", false, "")
 	fs.StringVar(&o.format, "format", "json", "")
 	fs.StringVar(&o.by, "by", "day", "")
 	fs.BoolVar(&o.unpriced, "unpriced", false, "")
@@ -161,7 +164,7 @@ func main() {
 			return
 		}
 		die(errors.New("usage: gg cache clear"))
-	case "", "report", "tui", "export", "sources", "prices":
+	case "", "report", "notes", "tui", "export", "sources", "prices":
 	default:
 		die(fmt.Errorf("unknown command %q (try `gg help`)", cmd))
 	}
@@ -373,9 +376,12 @@ func run(cmd string, o *opts) error {
 		if err != nil {
 			return err
 		}
+	case "notes":
+		t := theme(o, os.Stdout)
+		fmt.Println(strings.Join(render.Notes(t, c, termWidth(os.Stdout)), "\n"))
 	default:
 		t := theme(o, os.Stdout)
-		fmt.Print(render.Report(t, c, termWidth(os.Stdout), o.daily))
+		fmt.Print(render.Report(t, c, termWidth(os.Stdout), render.ReportOpts{Daily: o.daily, Notes: o.notes}))
 	}
 	if res.Cancelled {
 		os.Exit(130)

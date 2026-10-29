@@ -168,8 +168,13 @@ func TokenMix(t Theme, c *Ctx, width int) []string {
 // TableRows renders a ranked table: one header line and one line per group.
 // Columns drop away on narrow widths; nothing ever exceeds width.
 func TableRows(t Theme, gs []*agg.Group, total int64, width int, labelHdr string, flagUnpriced bool) (string, []string) {
+	return TableRowsOpt(t, gs, total, width, labelHdr, flagUnpriced, false)
+}
+
+// TableRowsOpt is TableRows with the share bar optionally suppressed.
+func TableRowsOpt(t Theme, gs []*agg.Group, total int64, width int, labelHdr string, flagUnpriced, noBar bool) (string, []string) {
 	showCost := width >= 56
-	showBar := width >= 78
+	showBar := width >= 78 && !noBar
 	costW, tokW, sesW := 10, 9, 5
 	barW := 14
 	fixed := 2 + tokW + 2 + 6 + 2
@@ -193,20 +198,29 @@ func TableRows(t Theme, gs []*agg.Group, total int64, width int, labelHdr string
 			share = float64(g.Tokens()) / float64(total)
 		}
 		label := g.Label
-		if flagUnpriced && !g.Complete() && lw > 14 {
+		lwEff, prefix, color := lw, "", CAccent
+		if t.Color && lw > 12 {
+			prefix, lwEff = "  ", lw-2
+			if len(g.Providers) == 1 {
+				for p := range g.Providers {
+					prefix, color = t.Dot(p)+" ", ProviderColor(p)
+				}
+			}
+		}
+		if flagUnpriced && !g.Complete() && lwEff > 14 {
 			flag := " unpriced"
 			if g.PricedTok > 0 {
 				flag = " partial"
 			}
-			label = t.Pad(label, lw-len(flag)) + t.Warn(flag)
+			label = t.Pad(label, lwEff-len(flag)) + t.Warn(flag)
 		}
-		l := "  " + t.Pad(label, lw) + "  " + t.PadL(Tokens(g.Tokens()), tokW) + "  " + t.PadL(Pct(share), 6)
+		l := "  " + prefix + t.Pad(label, lwEff) + "  " + t.PadL(Tokens(g.Tokens()), tokW) + "  " + t.PadL(Pct(share), 6)
 		if showCost {
 			l += "  " + t.PadL(costCell(t, g), costW)
 		}
 		l += "  " + t.PadL(Num(len(g.Sessions)), sesW)
 		if showBar {
-			l += "  " + t.Bar(share, barW)
+			l += "  " + t.ColBar(share, barW, color)
 		}
 		rows = append(rows, l)
 	}
@@ -301,7 +315,7 @@ func Daily(t Theme, c *Ctx, width int) []string {
 	}
 	out = append(out, "  "+t.Dim(fmt.Sprintf("peak %s (%s)  ·  %d of %d days active  ·  avg %s/active day",
 		peak.Key, Tokens(peak.Tokens()), active, len(days), Tokens(c.Sum.Total.Tokens()/int64(max(active, 1))))))
-	if len(days) >= 7 {
+	if len(days) >= 7 && active >= 7 {
 		h := len(days) / 2
 		var a, b float64
 		for _, v := range vals[:h] {
@@ -332,12 +346,19 @@ func reverse(g []*agg.Group) []*agg.Group {
 	return out
 }
 
-// Notes states estimates, gaps and unsupported data. Never empty: the
-// cost caveat is always present.
-func Notes(t Theme, c *Ctx, width int) []string {
-	out := []string{t.Section("Reading this honestly", "")}
-	add := func(s string) { out = append(out, wrap(t, "  • ", s, width)...) }
-	add("Cost is an estimate of what these tokens would cost at public API list prices — not your subscription bill. Plans like Claude Pro/Max or ChatGPT bill differently, so it will not match an invoice.")
+// Note is one statement about how far the numbers can be trusted.
+// Warn notes need attention (gaps in the data); the rest are context.
+type Note struct {
+	Warn bool
+	Text string // plain text, no colour
+}
+
+// NoteItems lists every caveat that applies to the current data. The cost
+// caveat is always first.
+func NoteItems(c *Ctx) []Note {
+	var out []Note
+	add := func(warn bool, f string, a ...any) { out = append(out, Note{warn, fmt.Sprintf(f, a...)}) }
+	add(false, "Cost is an estimate of what these tokens would cost at public API list prices — not your subscription bill. Plans like Claude Pro/Max or ChatGPT bill differently, so it will not match an invoice.")
 	tot := c.Sum.Total
 	if len(tot.Unpriced) > 0 {
 		var names []string
@@ -348,7 +369,18 @@ func Notes(t Theme, c *Ctx, width int) []string {
 		if len(names) > 4 {
 			names = append(names[:4], fmt.Sprintf("+%d more", len(names)-4))
 		}
-		add(t.Warn("Unpriced: ") + strings.Join(names, ", ") + ". Their tokens are included above, their cost is not. Add prices in your prices.json (see `gg prices`).")
+		add(true, "Unpriced: %s. Their tokens are included, their cost is not (totals show ≥). Add prices in your prices.json — see `gg prices --unpriced`.", strings.Join(names, ", "))
+	}
+	for _, id := range provOrder {
+		if d, ok := c.Detect[id]; ok && d.Status == providers.Unsupported {
+			add(true, "%s: %s.", provName(id), d.Detail)
+		}
+	}
+	if c.Errors > 0 {
+		add(true, "%d file(s) could not be read; their usage is missing.", c.Errors)
+	}
+	if c.Cancelled {
+		add(true, "The scan was cancelled: totals are partial. Rescan to resume from the cache.")
 	}
 	for _, cv := range c.Sum.Coverage() {
 		var miss []string
@@ -362,31 +394,79 @@ func Notes(t Theme, c *Ctx, width int) []string {
 			miss = append(miss, "reasoning tokens")
 		}
 		if len(miss) > 0 {
-			add(fmt.Sprintf("%s does not always report %s; shown as part of other counts or n/a, not as invented zeros.", provName(cv.Provider), strings.Join(miss, ", ")))
-		}
-	}
-	for _, id := range provOrder {
-		if d, ok := c.Detect[id]; ok && d.Status == providers.Unsupported {
-			add(t.Warn(provName(id)+": ") + d.Detail + ".")
+			add(false, "%s does not always report %s; those show as n/a or are part of other counts, never as invented zeros.", provName(cv.Provider), strings.Join(miss, ", "))
 		}
 	}
 	if c.Stats.Malformed+c.Stats.Anomalies+c.Stats.Oversized > 0 {
-		add(fmt.Sprintf("Ignored %d malformed record(s), clamped %d implausible counter(s), skipped %d oversized line(s). Totals exclude them.", c.Stats.Malformed, c.Stats.Anomalies, c.Stats.Oversized))
+		add(false, "Ignored %d malformed record(s), clamped %d implausible counter(s), skipped %d oversized line(s). Totals exclude them.", c.Stats.Malformed, c.Stats.Anomalies, c.Stats.Oversized)
 	}
 	if c.Duplicate > 0 {
-		add(fmt.Sprintf("%s repeated %s (streamed chunks, resumed or archived sessions) counted once.", Num(c.Duplicate), noun(c.Duplicate, "record")))
+		add(false, "%s repeated %s (streamed chunks, resumed or archived sessions) counted once.", Num(c.Duplicate), noun(c.Duplicate, "record"))
 	}
-	if c.Errors > 0 {
-		add(t.Warn(fmt.Sprintf("%d file(s) could not be read; their usage is missing.", c.Errors)))
+	if c.Prices != nil {
+		var parts []string
+		for _, s := range c.Prices.Sources {
+			parts = append(parts, s.Name+" ("+s.Updated+")")
+		}
+		add(false, "Prices: %s. List prices, standard tier; see `gg prices`.", strings.Join(parts, "; "))
 	}
-	if c.Cancelled {
-		add(t.Warn("Scan was cancelled: totals are partial. Run again to resume from the cache."))
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Warn && !out[j].Warn }) // warnings first
+	return out
+}
+
+// NoteCounts returns how many notes need attention and how many there are.
+func NoteCounts(c *Ctx) (warn, all int) {
+	n := NoteItems(c)
+	for _, x := range n {
+		if x.Warn {
+			warn++
+		}
+	}
+	return warn, len(n)
+}
+
+// Notes renders every note as a wrapped list.
+func Notes(t Theme, c *Ctx, width int) []string {
+	out := []string{t.Section("Notes", "how far to trust these numbers")}
+	warn, info := "⚠ ", "ℹ "
+	if t.ASCII {
+		warn, info = "! ", "i "
+	}
+	for _, n := range NoteItems(c) {
+		mark := t.Dim(info)
+		if n.Warn {
+			mark = t.Warn(warn)
+		}
+		w := clampInt(width-2, 20, 100)
+		for i, l := range wrapPlain(n.Text, w) {
+			pre := "  "
+			if i == 0 {
+				pre = mark
+			}
+			if n.Warn {
+				out = append(out, pre+l)
+			} else {
+				out = append(out, pre+t.Dim(l))
+			}
+		}
 	}
 	return out
 }
 
-func wrap(t Theme, prefix, s string, width int) []string {
-	w := clampInt(width-Width(prefix), 20, 100)
+// NoteLine is the one-line pointer used where the full notes are elsewhere.
+func NoteLine(t Theme, c *Ctx, hint string) string {
+	warn, all := NoteCounts(c)
+	if warn > 0 {
+		verb := "need"
+		if warn == 1 {
+			verb = "needs"
+		}
+		return t.Warn(fmt.Sprintf("⚠ %d %s %s attention", warn, noun(warn, "note"), verb)) + t.Dim(fmt.Sprintf(" · %d in total · %s", all, hint))
+	}
+	return t.Dim(fmt.Sprintf("ℹ %d notes on estimates and coverage · %s", all, hint))
+}
+
+func wrapPlain(s string, w int) []string {
 	var lines []string
 	cur := ""
 	for _, word := range strings.Fields(s) {
@@ -404,13 +484,6 @@ func wrap(t Theme, prefix, s string, width int) []string {
 	if cur != "" {
 		lines = append(lines, cur)
 	}
-	for i := range lines {
-		pre := prefix
-		if i > 0 {
-			pre = strings.Repeat(" ", Width(prefix))
-		}
-		lines[i] = t.Dim(pre) + lines[i]
-	}
 	return lines
 }
 
@@ -425,25 +498,32 @@ func plural(n int, w string) string { return fmt.Sprintf("%d %s", n, noun(n, w))
 
 func clampInt(v, lo, hi int) int { return max(lo, min(hi, v)) }
 
-// Wrap word-wraps s with a hanging prefix.
-func Wrap(t Theme, prefix, s string, width int) []string { return wrap(t, prefix, s, width) }
+// ReportOpts selects optional report sections.
+type ReportOpts struct {
+	Daily bool // per-day table
+	Notes bool // full notes instead of the one-line pointer
+}
 
 // Report assembles the compact report.
-func Report(t Theme, c *Ctx, width int, daily bool) string {
+func Report(t Theme, c *Ctx, width int, o ReportOpts) string {
 	if width <= 0 {
 		width = 100
 	}
 	width = min(width, 110)
 	var secs [][]string
-	secs = append(secs, Header(t, c, width), Overview(t, c, width))
+	ov := Overview(t, c, width)
+	ov = append(ov, t.Dim(t.Pad("Notes", 10))+NoteLine(t, c, "run `gg notes`"))
+	secs = append(secs, Header(t, c, width), ov)
 	if c.Sum.Total.Tokens() > 0 {
 		secs = append(secs, TokenMix(t, c, width), Daily(t, c, width))
-		if daily {
+		if o.Daily {
 			secs = append(secs, DailyTable(t, c, width))
 		}
 		secs = append(secs, Providers(t, c, width, 6), Models(t, c, width, 8), Projects(t, c, width, 8))
 	}
-	secs = append(secs, Notes(t, c, width))
+	if o.Notes {
+		secs = append(secs, Notes(t, c, width))
+	}
 	var b strings.Builder
 	for i, s := range secs {
 		if i > 0 {

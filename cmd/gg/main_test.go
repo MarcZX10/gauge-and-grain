@@ -89,6 +89,17 @@ func TestCLI(t *testing.T) {
 		}
 	}
 
+	out, _ = gg(t, bin, home, "notes", "--all")
+	out = strings.Join(strings.Fields(out), " ") // ignore wrapping
+	if !strings.Contains(out, "not your subscription bill") || !strings.Contains(out, "mystery-model-9") {
+		t.Errorf("notes:\n%s", out)
+	}
+	out, _ = gg(t, bin, home, "report", "--all")
+	out = strings.Join(strings.Fields(out), " ")
+	if strings.Contains(out, "not your subscription bill. Plans") || !strings.Contains(out, "gg notes") {
+		t.Errorf("default report must only point at the notes:\n%s", out)
+	}
+
 	out, _ = gg(t, bin, home, "sources")
 	if !strings.Contains(out, "Claude Code") || !strings.Contains(out, "Gemini CLI") {
 		t.Errorf("sources:\n%s", out)
