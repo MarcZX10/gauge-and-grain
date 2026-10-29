@@ -3,7 +3,10 @@ package providers
 import (
 	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/MarcZX10/gauge-and-grain/internal/model"
@@ -102,5 +105,86 @@ func TestCorruptDatabaseIsAnErrorNotACrash(t *testing.T) {
 	}
 	if _, _, err := opencodeFamily[0].ParsePath(context.Background(), p); err == nil {
 		t.Error("a corrupt database must return an error (reported as an unreadable file), not data")
+	}
+}
+
+func dirNames(t *testing.T, dir string) []string {
+	t.Helper()
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n []string
+	for _, e := range ents {
+		n = append(n, e.Name())
+	}
+	return n
+}
+
+// Reading another tool's database must not create files beside it.
+func TestOpenCodeNeverWritesBesideTheDatabase(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "opencode.db")
+	db := makeOpenCodeDB(t, path)
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close() // closing the last connection removes the -wal: the normal state
+	before := dirNames(t, dir)
+	evs, _, err := opencodeFamily[0].ParsePath(context.Background(), path)
+	if err != nil || len(evs) != 2 {
+		t.Fatalf("%v %d", err, len(evs))
+	}
+	if after := dirNames(t, dir); !reflect.DeepEqual(before, after) {
+		t.Errorf("files appeared next to the database: %v -> %v", before, after)
+	}
+}
+
+// With a live write-ahead log the freshest rows are read from a private copy.
+func TestOpenCodeReadsActiveWALFromACopy(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "opencode.db")
+	db := makeOpenCodeDB(t, path)
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`PRAGMA wal_autocheckpoint=0`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO message VALUES ('m9','s1',1790100400000,'{"role":"assistant","modelID":"fresh","tokens":{"input":7,"output":3}}')`); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(path + "-wal"); err != nil || fi.Size() == 0 {
+		t.Skip("this SQLite build did not leave a write-ahead log")
+	}
+	before := dirNames(t, dir)
+	evs, _, err := opencodeFamily[0].ParsePath(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if find(evs, "fresh") == nil {
+		t.Errorf("a row that exists only in the -wal was not read: %+v", evs)
+	}
+	if after := dirNames(t, dir); !reflect.DeepEqual(before, after) {
+		t.Errorf("files appeared next to the database: %v -> %v", before, after)
+	}
+}
+
+func TestOpenCodeSkipsHugeRowsAndStopsRunawayQueries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode.db")
+	db := makeOpenCodeDB(t, path)
+	big := `{"role":"assistant","modelID":"big","tokens":{"input":1,"output":1},"pad":"` + strings.Repeat("x", maxRowData) + `"}`
+	if _, err := db.Exec(`INSERT INTO message VALUES ('mbig','s1',1790100500000,?)`, big); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	evs, st, err := opencodeFamily[0].ParsePath(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if find(evs, "big") != nil || st.Oversized != 1 || len(evs) != 2 {
+		t.Errorf("an oversized row must be skipped and counted: oversized=%d evs=%+v", st.Oversized, evs)
 	}
 }

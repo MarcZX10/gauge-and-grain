@@ -29,7 +29,7 @@ type Codex struct{}
 
 func (Codex) ID() string         { return "codex" }
 func (Codex) Name() string       { return "OpenAI Codex" }
-func (Codex) ParserVersion() int { return 1 }
+func (Codex) ParserVersion() int { return 2 }
 func (Codex) Fields() Fields {
 	return Fields{CacheRead: true, CacheWrite: true, Reasoning: true,
 		Note: "cache writes are not billed separately by OpenAI"}
@@ -128,15 +128,20 @@ type codexState struct {
 	Session, CWD, CurModel string
 	PrevTotal              codexUsage
 	HavePrev               bool
-	UsingRecords           bool
-	Counts                 []model.Event // legacy-path events, kept only when records took over
+	// UsingRecords is set by the first token_usage_record. From then on the
+	// cumulative token_count events only repeat what the records already
+	// say, so they are tracked (to keep PrevTotal right) but not counted.
+	UsingRecords bool
 }
 
+// codexParser keeps one list of events: the usage counted from cumulative
+// token_count events before the first exact record (older logs, or a session
+// that started before the log format changed), then the exact records.
 type codexParser struct {
-	st              model.ParseStats
-	s               codexState
-	records, counts []model.Event
-	seenResp        map[string]bool
+	st       model.ParseStats
+	s        codexState
+	evs      []model.Event
+	seenResp map[string]bool
 }
 
 func (Codex) NewParser(path string, r *Resume) Parser {
@@ -150,38 +155,23 @@ func (Codex) NewParser(path string, r *Resume) Parser {
 				p.s = s
 			}
 		}
-		if p.s.UsingRecords {
-			p.records, p.counts = r.Events, p.s.Counts
-		} else {
-			p.counts = r.Events
-		}
-		for i := range p.records {
-			p.seenResp[strings.TrimPrefix(p.records[i].Key, "codex:resp:")] = true
+		p.evs = r.Events
+		for i := range p.evs {
+			if k, ok := strings.CutPrefix(p.evs[i].Key, "codex:resp:"); ok {
+				p.seenResp[k] = true
+			}
 		}
 	}
 	return p
 }
 
 func (p *codexParser) State() []byte {
-	s := p.s
-	s.UsingRecords = len(p.records) > 0
-	s.Counts = nil
-	if s.UsingRecords {
-		s.Counts = p.counts
-	}
 	var b bytes.Buffer
-	_ = gob.NewEncoder(&b).Encode(&s)
+	_ = gob.NewEncoder(&b).Encode(&p.s)
 	return b.Bytes()
 }
 
-// Result prefers exact per-response records; cumulative deltas are the
-// fallback for older logs.
-func (p *codexParser) Result() ([]model.Event, model.ParseStats) {
-	if len(p.records) > 0 {
-		return p.records, p.st
-	}
-	return p.counts, p.st
-}
+func (p *codexParser) Result() ([]model.Event, model.ParseStats) { return p.evs, p.st }
 
 func (p *codexParser) Line(line []byte) {
 	st := &p.st
@@ -234,7 +224,8 @@ func (p *codexParser) Line(line []byte) {
 		p.seenResp[pl.ResponseID] = true
 		base.Key = "codex:resp:" + pl.ResponseID
 		if e, ok := pl.Usage.event(base, st); ok {
-			p.records = append(p.records, e)
+			p.s.UsingRecords = true
+			p.evs = append(p.evs, e)
 		} else {
 			st.Malformed++
 		}
@@ -260,9 +251,12 @@ func (p *codexParser) Line(line []byte) {
 			}
 		}
 		p.s.PrevTotal, p.s.HavePrev = *t, true
+		if p.s.UsingRecords {
+			return // already counted exactly by the records
+		}
 		base.Key = "codex:cum:" + p.s.Session + ":" + itoa(cur)
 		if e, ok := d.event(base, st); ok {
-			p.counts = append(p.counts, e)
+			p.evs = append(p.evs, e)
 		}
 	}
 }

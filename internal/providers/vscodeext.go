@@ -104,6 +104,18 @@ func (v VSCodeExt) Detect() Detection {
 
 func (VSCodeExt) WholeFile(string) bool { return true }
 
+// sideFile is the file next to ui_messages.json that names the model.
+func (v VSCodeExt) sideFile(path string) string {
+	if v.modelFromMeta {
+		return filepath.Join(filepath.Dir(path), "task_metadata.json")
+	}
+	return filepath.Join(filepath.Dir(path), "api_conversation_history.json")
+}
+
+// KeyFiles: the model is read from the side file, so it is part of the cache
+// key (a model written after the first scan must not stay "unknown").
+func (v VSCodeExt) KeyFiles(path string) []string { return []string{v.sideFile(path)} }
+
 type uiMessage struct {
 	Type string `json:"type"`
 	Say  string `json:"say"`
@@ -197,7 +209,7 @@ func (t taskModels) at(ts int64) string {
 func (p *extParser) taskModels(dir string) taskModels {
 	var tm taskModels
 	if p.v.modelFromMeta {
-		b, err := os.ReadFile(filepath.Join(dir, "task_metadata.json"))
+		b, err := ReadRegular(filepath.Join(dir, "task_metadata.json"), maxSmallFile)
 		if err != nil {
 			return tm
 		}
@@ -217,11 +229,8 @@ func (p *extParser) taskModels(dir string) taskModels {
 		}
 		return tm
 	}
-	hist := filepath.Join(dir, "api_conversation_history.json")
-	if fi, err := os.Stat(hist); err != nil || fi.Size() > 64<<20 { // huge histories: leave the model unknown
-		return tm
-	}
-	b, err := os.ReadFile(hist)
+	// huge or non-regular histories: leave the model unknown
+	b, err := ReadRegular(filepath.Join(dir, "api_conversation_history.json"), maxSmallFile)
 	if err != nil {
 		return tm
 	}

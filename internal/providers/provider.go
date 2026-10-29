@@ -8,7 +8,6 @@ import (
 	"context"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/MarcZX10/gauge-and-grain/internal/model"
@@ -67,6 +66,14 @@ type WholeFiler interface {
 type PathReader interface {
 	ReadsPath(path string) bool
 	ParsePath(ctx context.Context, path string) ([]model.Event, model.ParseStats, error)
+}
+
+// KeyFiler is implemented by providers whose output depends on files other
+// than the one being parsed (a SQLite -wal, the model recorded beside a
+// task transcript). Their size and modification time are folded into the
+// cache key, so a change to any of them re-reads the file.
+type KeyFiler interface {
+	KeyFiles(path string) []string
 }
 
 // Experimental is implemented by providers whose parser follows a
@@ -227,22 +234,10 @@ func home() string {
 	return h
 }
 
-// walkJSONL lists *.jsonl files below dirs.
+// walkJSONL lists the regular *.jsonl files below dirs.
 func walkJSONL(dirs []string) []string {
 	var out []string
-	seen := map[string]bool{}
-	for _, d := range dirs {
-		_ = filepath.WalkDir(d, func(p string, de os.DirEntry, err error) error {
-			if err != nil {
-				return nil // unreadable subtree: skip, reported via Detect
-			}
-			if !de.IsDir() && strings.HasSuffix(p, ".jsonl") && !seen[p] {
-				seen[p] = true
-				out = append(out, p)
-			}
-			return nil
-		})
-	}
+	_ = walkExt(dirs, func(p string) bool { return strings.HasSuffix(p, ".jsonl") }, &out)
 	return out
 }
 
@@ -250,7 +245,7 @@ func existingDirs(c []string) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, d := range c {
-		if st, err := os.Stat(d); err == nil && st.IsDir() && !seen[d] {
+		if st, err := os.Stat(d); err == nil && st.IsDir() && !seen[d] { // Stat follows a symlinked root
 			seen[d] = true
 			out = append(out, d)
 		}
