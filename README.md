@@ -17,10 +17,11 @@ as a compact report or an interactive terminal dashboard. Run it with <code>gg</
 ```sh
 curl -fsSL https://raw.githubusercontent.com/MarcZX10/gauge-and-grain/main/scripts/install.sh | sh   # Linux / macOS
 irm https://raw.githubusercontent.com/MarcZX10/gauge-and-grain/main/scripts/install.ps1 | iex          # Windows
-go install github.com/MarcZX10/gauge-and-grain/cmd/gg@latest                                           # any OS with Go 1.24+
+go install github.com/MarcZX10/gauge-and-grain/cmd/gg@latest                                           # any OS with Go 1.26+
 ```
 
-Update by running the same command again (the installers verify a SHA-256 checksum).
+Update by running the same command again. The installers verify a SHA-256 checksum, and the release signature when
+`cosign` is installed; [how to check a download](docs/PRIVACY.md#verify-a-download).
 
 ## Use
 

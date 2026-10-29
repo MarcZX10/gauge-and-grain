@@ -16,8 +16,8 @@
   `net` pulled in by a UUID library inside the SQLite driver (type definitions for hardware addresses; nothing is
   dialled).
 - Only the **installers** use the network (`scripts/install.sh`, `scripts/install.ps1`), to download a release from
-  GitHub; they verify its SHA-256 checksum before installing anything. Prices are embedded in the binary, so
-  everything works offline.
+  GitHub. They verify its SHA-256 checksum, and its signature when `cosign` is installed, before installing anything
+  (see [Verify a download](#verify-a-download)). Prices are embedded in the binary, so everything works offline.
 
 ## What is read
 
@@ -31,14 +31,20 @@ record is:
 
 Message text, tool output, file contents and credentials are never retained, written to the cache, or exported. Two
 parsers open a second file next to a log to learn the model (Cline's `task_metadata.json`; Roo, Kilo and Zoo's
-`api_conversation_history.json`, where only the `<model>…</model>` tag is read, and only if the file is under 64 MB).
+`api_conversation_history.json`, where only the `<model>…</model>` tag is read). Both are read only if they are regular
+files of at most 64 MB, and changing one of them invalidates the cached result of the task it belongs to.
 
 ## What is written
 
 `gg` writes to exactly one place: its **cache** directory (`gg sources` prints the path), which holds, per source
 file, the kept fields above plus a little parser state needed to resume (for example Codex's current model and
-cumulative counters, or Pi's working directory). It is derived data: delete it any time with `gg cache clear`. `gg`
-never modifies or deletes the logs it reads. SQLite databases are opened **read-only**.
+cumulative counters, or Pi's working directory). The directory is readable only by you (`0700`, files `0600`). It is
+derived data: delete it any time with `gg cache clear`, which removes only the files `gg` wrote. Entries whose log has
+disappeared are removed on the next scan. `gg` never modifies or deletes the logs it reads.
+
+SQLite databases (OpenCode, Kilo CLI) are never written to, and `gg` creates no `-shm`, `-wal` or journal files beside
+them. A database with no write-ahead log is opened in immutable mode. When its `-wal` holds recent rows, the database
+and its log are copied to a private temporary directory (at most 1 GB), read there, and the copy is deleted.
 
 ## What an export contains
 
@@ -55,18 +61,48 @@ folder name). `gg` is designed so that none of this can crash it or corrupt tota
   malformed — never summed. A half-written final line of a live file is left for the next run.
 - Negative or absurd counters (over 10¹²) are **clamped to zero and counted**, so one bad record cannot swamp a total.
 - Lines over **64 MB** are skipped (counted as oversized) instead of buffered; single-document files over **256 MB**
-  are skipped; sibling model files over 64 MB are ignored.
-- SQLite databases are opened read-only; a corrupt database or a file that is not zstd is reported as an unreadable
-  file, and the rest of the scan continues.
+  are skipped; sibling model files over 64 MB are ignored; SQLite databases over 8 GB are skipped; a database row over
+  8 MB is skipped.
+- Only **regular files** are read. A named pipe, a device or a socket named like a log (`x.jsonl`) is ignored, so it
+  cannot block a scan. A symbolic link to a regular file is followed; a data directory that is a symbolic link is
+  followed too.
+- Compressed (zstd) sessions can expand only up to 1 GB; a session still being written, or cut short, keeps what
+  decoded.
+- Text taken from a log (model names, session ids, working directories) has terminal control characters removed and is
+  capped at 1 KB before it is cached, counted or printed, so a log cannot change your terminal (retitle the window, clear
+  the screen) or inflate the cache.
+- SQLite queries are cancelled after three minutes.
+- A corrupt database is reported as an unreadable file, and the rest of the scan continues.
 - CSV cells starting with `=`, `+`, `-` or `@` are neutralised so a hostile path cannot execute as a spreadsheet
   formula.
-- Every parser is run against arbitrary bytes in a fuzz test (`FuzzParsersNeverPanic`) that must never panic.
-- Cache files are written atomically (temp file + rename); a corrupt or old cache entry is simply re-parsed.
+- The text parsers (every log format except the zstd and SQLite readers) are run against arbitrary bytes in a fuzz test
+  (`FuzzParsersNeverPanic`) that must never panic. The zstd and SQLite readers are covered by tests with truncated and
+  corrupt inputs instead.
+- Cache files are written atomically (a private temporary file, then rename); a corrupt or old cache entry is simply
+  re-parsed.
 
-## Verifying a release
+## Verify a download
 
-Release archives are built by GitHub Actions from a tag (see `.github/workflows/release.yml`) and published with a
-`checksums.txt`. The installers check it; you can too: `sha256sum -c checksums.txt --ignore-missing`. Or skip binaries
-and build from source: `go install github.com/MarcZX10/gauge-and-grain/cmd/gg@latest`.
+Release archives are built by GitHub Actions from a tag that points at `main` (see
+`.github/workflows/release.yml`). The build runs in a protected `release` environment, the archives carry GitHub build
+provenance, and `checksums.txt` is signed keylessly with the workflow's own identity (Sigstore).
+
+A checksum only shows that a file is intact; the signature and the provenance show where it was built. Check both:
+
+```sh
+# 1. the checksums were signed by this repository's release workflow
+cosign verify-blob --certificate checksums.txt.pem --signature checksums.txt.sig \
+  --certificate-identity-regexp '^https://github.com/MarcZX10/gauge-and-grain/\.github/workflows/release\.yml@refs/tags/v.+$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
+
+# 2. the archive matches those checksums
+sha256sum -c checksums.txt --ignore-missing
+
+# 3. the archive was built by that workflow (needs the GitHub CLI)
+gh attestation verify gg_linux_amd64.tar.gz --repo MarcZX10/gauge-and-grain
+```
+
+The installers do steps 1 and 2 when `cosign` is installed and say so when it is not. Or skip binaries and build from
+source: `go install github.com/MarcZX10/gauge-and-grain/cmd/gg@latest` (requires Go 1.26 or later).
 
 Found a problem? Open an issue — and please sanitise any log you attach.

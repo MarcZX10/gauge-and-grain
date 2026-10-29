@@ -7,6 +7,7 @@ builds:
     env: [CGO_ENABLED=0]
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
+    flags: [-trimpath]
     ldflags: ["-s -w -X main.version={{.Version}}"]
 archives:
   - formats: [tar.gz]
@@ -15,8 +16,25 @@ archives:
     format_overrides:
       - goos: windows
         formats: [zip]
-    files: [README.md, docs/*]
+    # binary redistribution must carry the licence and the notices of the
+    # modules it is built from
+    files: [LICENSE, THIRD_PARTY_NOTICES.md, README.md, docs/*]
 checksum:
   name_template: checksums.txt
+# The checksum file is signed keylessly with the release workflow's identity
+# (Sigstore). The installers and `cosign verify-blob` check it against that
+# identity, so a replaced release cannot pass as genuine.
+signs:
+  - cmd: cosign
+    artifacts: checksum
+    certificate: '${artifact}.pem'
+    signature: '${artifact}.sig'
+    output: true
+    args:
+      - sign-blob
+      - '--output-certificate=${certificate}'
+      - '--output-signature=${signature}'
+      - '${artifact}'
+      - '--yes'
 changelog:
   disable: true
