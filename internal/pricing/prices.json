@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "currency": "USD",
+  "unit": "per 1M tokens",
+  "sources": [
+    {
+      "id": "anthropic",
+      "name": "Anthropic API model & pricing table",
+      "url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "updated": "2026-10-06",
+      "note": "Cache writes use the documented multipliers: 5-minute = 1.25x input, 1-hour = 2x input. Where a model's cache-read price is not listed it is derived as 0.1x input and marked derived."
+    },
+    {
+      "id": "openai",
+      "name": "OpenAI API pricing (standard tier, context <= 272K)",
+      "url": "https://developers.openai.com/api/docs/pricing",
+      "updated": "2026-10-29",
+      "note": "Retrieved through a page summariser; check the URL before relying on exact figures. Batch, Flex, Fast and long-context rates are not modelled."
+    }
+  ],
+  "models": [
+    {"id": "claude-fable-5-1",   "source": "anthropic", "input": 10.00, "output": 50.00, "cache_read": 0.25},
+    {"id": "claude-fable-5",     "source": "anthropic", "input": 10.00, "output": 50.00, "cache_read": 0.25},
+    {"id": "claude-mythos-5-1",  "source": "anthropic", "input": 10.00, "output": 50.00, "cache_read": 0.25},
+    {"id": "claude-opus-5-5",    "source": "anthropic", "input": 4.00,  "output": 20.00, "cache_read": 0.20},
+    {"id": "claude-opus-5",      "source": "anthropic", "input": 5.00,  "output": 25.00, "derived": ["cache_read"]},
+    {"id": "claude-opus-4-8",    "source": "anthropic", "input": 5.00,  "output": 25.00, "derived": ["cache_read"]},
+    {"id": "claude-opus-4-7",    "source": "anthropic", "input": 5.00,  "output": 25.00, "derived": ["cache_read"]},
+    {"id": "claude-opus-4-6",    "source": "anthropic", "input": 5.00,  "output": 25.00, "derived": ["cache_read"]},
+    {"id": "claude-sonnet-5-5",  "source": "anthropic", "input": 2.00,  "output": 10.00, "cache_read": 0.20},
+    {"id": "claude-sonnet-5",    "source": "anthropic", "input": 2.00,  "output": 10.00, "derived": ["cache_read"]},
+    {"id": "claude-sonnet-4-6",  "source": "anthropic", "input": 3.00,  "output": 15.00, "derived": ["cache_read"]},
+    {"id": "claude-haiku-5-5",   "source": "anthropic", "input": 0.10,  "output": 0.50,  "derived": ["cache_read"], "note": "prompts up to 100K tokens; longer prompts cost more and are not modelled"},
+    {"id": "claude-haiku-4-5",   "source": "anthropic", "input": 1.00,  "output": 5.00,  "derived": ["cache_read"]},
+
+    {"id": "gpt-5",              "source": "openai", "input": 1.25,  "output": 10.00, "cache_read": 0.125},
+    {"id": "gpt-5-mini",         "source": "openai", "input": 0.25,  "output": 2.00,  "cache_read": 0.025},
+    {"id": "gpt-5.1",            "source": "openai", "input": 1.25,  "output": 10.00, "cache_read": 0.125},
+    {"id": "gpt-5.2",            "source": "openai", "input": 1.75,  "output": 14.00, "cache_read": 0.175},
+    {"id": "gpt-5.3-codex",      "source": "openai", "input": 1.75,  "output": 14.00, "cache_read": 0.175},
+    {"id": "gpt-5.4",            "source": "openai", "input": 2.50,  "output": 15.00, "cache_read": 0.25},
+    {"id": "gpt-5.4-mini",       "source": "openai", "input": 0.75,  "output": 4.50,  "cache_read": 0.075},
+    {"id": "gpt-5.4-nano",       "source": "openai", "input": 0.20,  "output": 1.25,  "cache_read": 0.02},
+    {"id": "gpt-5.5",            "source": "openai", "input": 5.00,  "output": 30.00, "cache_read": 0.50},
+    {"id": "gpt-5.6-sol",        "source": "openai", "input": 4.00,  "output": 20.00, "cache_read": 0.40},
+    {"id": "gpt-5.6-terra",      "source": "openai", "input": 2.00,  "output": 12.00, "cache_read": 0.20},
+    {"id": "gpt-5.6-luna",       "source": "openai", "input": 0.20,  "output": 1.20,  "cache_read": 0.02},
+    {"id": "gpt-6-astra",        "source": "openai", "input": 10.00, "output": 50.00, "cache_read": 1.00},
+    {"id": "gpt-6-sol",          "source": "openai", "input": 2.00,  "output": 10.00, "cache_read": 0.20},
+    {"id": "gpt-6-luna",         "source": "openai", "input": 0.10,  "output": 0.50,  "cache_read": 0.01},
+    {"id": "gpt-6.1-sol",        "source": "openai", "input": 2.00,  "output": 10.00, "cache_read": 0.10},
+    {"id": "gpt-6.1-terra",      "source": "openai", "input": 1.00,  "output": 5.00,  "cache_read": 0.05}
+  ]
+}
