@@ -13,7 +13,7 @@ make cross        # compile for linux/darwin/windows × amd64/arm64
 go vet ./... && gofmt -l .   # CI fails on either
 ```
 
-Go 1.24+. The only third-party code is Bubble Tea (event loop), `go-runewidth`, `go-isatty`, `x/term`, `x/sys`,
+Go 1.26+ (the version in `go.mod`). The only third-party code is Bubble Tea (event loop), `go-runewidth`, `go-isatty`, `x/term`, `x/sys`,
 `modernc.org/sqlite` (pure-Go, no CGO) and `klauspost/compress/zstd`. CI runs the tests on Linux, macOS and Windows.
 
 ## Layout
@@ -87,3 +87,6 @@ installer afterwards: `curl -fsSL …/scripts/install.sh | sh`.
 
 Match the surrounding code: comments explain *why* (assumptions, units, invariants), names are plain, errors are
 reported not hidden. Commits describe the change and its reason. Keep claims in the UI and docs to what is measured.
+
+When `go.mod` changes, regenerate the third-party notices that every release archive ships: `make notices`
+(CI fails if `THIRD_PARTY_NOTICES.md` is out of date).

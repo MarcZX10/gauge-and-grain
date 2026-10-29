@@ -320,6 +320,7 @@ func (m *model_) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.search, m.input = true, m.filter.Text
 	case "c":
 		m.filter.Text, m.filter.Models, m.filter.Projects, m.drill = "", nil, nil, nil
+		m.filter.ModelsExact, m.filter.ProjectsExact = nil, nil
 		m.provIdx = 0
 		m.applyPeriod()
 	case "r", "R":
@@ -516,9 +517,9 @@ func (m *model_) back() {
 		case "provider":
 			m.provIdx = 0
 		case "model":
-			m.filter.Models = nil
+			m.filter.ModelsExact = nil
 		case "project":
-			m.filter.Projects = nil
+			m.filter.ProjectsExact = nil
 		case "day":
 			m.applyPeriod()
 			return
@@ -660,6 +661,9 @@ func (m *model_) drillDown() {
 			return
 		}
 		m.filter.From, m.filter.To, m.rangeNm = d, d.AddDate(0, 0, 1), g.Key
+		// One day is compared with the day before it, not with the whole
+		// period the view was showing (that window no longer applies).
+		m.filter.PrevFrom, m.filter.PrevTo = time.Time{}, time.Time{}
 		var keep []string
 		for _, v := range m.drill {
 			if !strings.HasPrefix(v, "day:") {
@@ -689,10 +693,10 @@ func (m *model_) drillDown() {
 			}
 			m.drill = append(m.drill, "provider:"+firstKey(g.Providers))
 		}
-		m.filter.Models = []string{name}
+		m.filter.ModelsExact = []string{name}
 		m.drill = append(m.drill, "model:"+g.Label)
 	case tabProjects:
-		m.filter.Projects = []string{g.Key}
+		m.filter.ProjectsExact = []string{g.Key}
 		m.drill = append(m.drill, "project:"+g.Label)
 	default:
 		return // a session is already the finest level
@@ -1110,7 +1114,7 @@ func (m *model_) prevSpan() string {
 	}
 	pf, pt := m.filter.PrevFrom, m.filter.PrevTo
 	if pf.IsZero() {
-		pf, pt = f.Add(-to.Sub(f)), f
+		pf, pt = agg.PrevWindow(f, to, m.cfg.Loc)
 	}
 	return spanShort(pf, pt, m.cfg.Loc)
 }

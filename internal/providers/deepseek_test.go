@@ -3,6 +3,7 @@ package providers
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -92,5 +93,62 @@ func TestDeepSeekGarbageIsAnErrorNotACrash(t *testing.T) {
 	os.WriteFile(p, []byte("not zstd at all"), 0o644)
 	if _, _, err := (DeepSeek{}).ParsePath(context.Background(), p); err == nil {
 		t.Error("a file that is not zstd must be reported as unreadable")
+	}
+}
+
+func zstdBytes(t *testing.T, plain []byte) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	w, err := zstd.NewWriter(&b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Write(plain)
+	w.Close()
+	return b.Bytes()
+}
+
+const dshLine = `{"type":"assistant/message","time":1790100000000,"data":{"message":{"id":"m%d","source":{"model":"deepseek-v4"}},"usage":{"inputTokens":10,"outputTokens":5}}}` + "\n"
+
+// A session still being written ends in the middle of a zstd frame: what
+// decoded so far counts, and the file is not an error.
+func TestDeepSeekTruncatedArchiveKeepsWhatDecoded(t *testing.T) {
+	var plain bytes.Buffer
+	for i := 0; i < 2000; i++ {
+		fmt.Fprintf(&plain, dshLine, i)
+	}
+	z := zstdBytes(t, plain.Bytes())
+	p := filepath.Join(t.TempDir(), "session.jsonl.zstd")
+	if err := os.WriteFile(p, z[:len(z)*2/3], 0o644); err != nil {
+		t.Fatal(err)
+	}
+	evs, _, err := DeepSeek{}.ParsePath(context.Background(), p)
+	if err != nil || len(evs) == 0 || len(evs) >= 2000 {
+		t.Fatalf("want some but not all events and no error, got %d, %v", len(evs), err)
+	}
+}
+
+// A small archive that expands without bound stops at the limit and is flagged.
+func TestDeepSeekDecompressionBomb(t *testing.T) {
+	old := maxDecompressed
+	maxDecompressed = 4 << 20
+	defer func() { maxDecompressed = old }()
+	var plain bytes.Buffer
+	fmt.Fprintf(&plain, dshLine, 1)
+	plain.Write(bytes.Repeat([]byte("\n"), 32<<20)) // blank lines: compress to almost nothing
+	z := zstdBytes(t, plain.Bytes())
+	if len(z) > 1<<20 {
+		t.Fatalf("test archive too big: %d", len(z))
+	}
+	p := filepath.Join(t.TempDir(), "session.jsonl.zstd")
+	if err := os.WriteFile(p, z, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	evs, st, err := DeepSeek{}.ParsePath(context.Background(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Oversized == 0 || len(evs) != 1 {
+		t.Errorf("exceeding the decompression limit must be counted (oversized=%d) and keep what was read (%d events)", st.Oversized, len(evs))
 	}
 }

@@ -4,6 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -66,8 +69,7 @@ func (o OpenCodeFamily) Files() []string {
 	var out []string
 	base := o.base()
 	for _, pat := range []string{o.dir + ".db", o.dir + "-*.db"} {
-		m, _ := filepath.Glob(filepath.Join(base, pat))
-		out = append(out, m...)
+		out = append(out, listFiles(base, pat)...)
 	}
 	_ = walkExt(existingDirs([]string{filepath.Join(base, "storage", "message")}), func(p string) bool { return filepath.Ext(p) == ".json" }, &out)
 	return out
@@ -90,6 +92,15 @@ func (o OpenCodeFamily) Detect() Detection {
 
 // WholeFile: legacy .json messages are one document each.
 func (o OpenCodeFamily) WholeFile(path string) bool { return filepath.Ext(path) == ".json" }
+
+// KeyFiles: recent writes live in the -wal until a checkpoint, so the main
+// file alone can look unchanged while its content has moved on.
+func (o OpenCodeFamily) KeyFiles(path string) []string {
+	if filepath.Ext(path) == ".db" {
+		return []string{path + "-wal"}
+	}
+	return nil
+}
 
 // ReadsPath: databases are opened by the provider, not read as bytes.
 func (o OpenCodeFamily) ReadsPath(path string) bool { return filepath.Ext(path) == ".db" }
@@ -197,23 +208,105 @@ func (p *ocJSONParser) Line(doc []byte) {
 	}
 }
 
+// Limits for reading another tool's database. A database comes from a tool
+// that processes untrusted repositories, so it is treated as untrusted too.
+const (
+	maxDBSize  = 8 << 30         // larger databases are skipped and counted
+	maxDBCopy  = 1 << 30         // largest database copied to read it next to an active -wal
+	maxRowData = 8 << 20         // a message or part row larger than this is skipped
+	dbTimeout  = 3 * time.Minute // a query (or a runaway view) is cancelled after this
+)
+
+// openReadOnly opens a SQLite database without ever writing next to it.
+//
+// With no write-ahead log (the normal state of a database its tool has
+// closed) it is opened "immutable", which takes no locks and creates no
+// files. With a non-empty -wal the freshest rows are in that log and reading
+// it needs a -shm file; rather than create one beside the other tool's data,
+// the database and its log are copied to a temporary directory and read
+// there. cleanup removes the copy.
+func openReadOnly(path string, size int64) (db *sql.DB, cleanup func(), err error) {
+	cleanup = func() {}
+	target, immutable := path, true
+	if wi, werr := os.Stat(path + "-wal"); werr == nil && wi.Size() > 0 {
+		if size > maxDBCopy {
+			return nil, cleanup, fmt.Errorf("database over %d MB with an active write-ahead log: close the tool and rescan", maxDBCopy>>20)
+		}
+		dir, derr := os.MkdirTemp("", "gg-sqlite-")
+		if derr != nil {
+			return nil, cleanup, derr
+		}
+		cleanup = func() { os.RemoveAll(dir) }
+		target, immutable = filepath.Join(dir, "db"), false
+		if err = copyFile(path, target); err == nil {
+			err = copyFile(path+"-wal", target+"-wal")
+		}
+		if err != nil {
+			cleanup()
+			return nil, func() {}, err
+		}
+	}
+	u := url.URL{Scheme: "file", Path: filepath.ToSlash(target)}
+	if filepath.VolumeName(target) != "" { // Windows drive letter
+		u.Path = "/" + filepath.ToSlash(target)
+	}
+	q := u.Query()
+	if immutable {
+		q.Set("immutable", "1")
+	} else {
+		q.Set("mode", "ro")
+	}
+	q.Add("_pragma", "busy_timeout(5000)")
+	q.Add("_pragma", "query_only(1)")
+	u.RawQuery = q.Encode()
+	db, err = sql.Open("sqlite", u.String())
+	if err != nil {
+		cleanup()
+		return nil, func() {}, err
+	}
+	db.SetMaxOpenConns(1)
+	rm := cleanup
+	return db, func() { db.Close(); rm() }, nil
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err = io.Copy(out, io.LimitReader(in, maxDBCopy+1)); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
+}
+
 // ParsePath reads a SQLite database read-only.
 func (o OpenCodeFamily) ParsePath(ctx context.Context, path string) ([]model.Event, model.ParseStats, error) {
 	var st model.ParseStats
-	u := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
-	if filepath.VolumeName(path) != "" { // Windows drive letter
-		u.Path = "/" + filepath.ToSlash(path)
-	}
-	q := u.Query()
-	q.Set("mode", "ro")
-	q.Add("_pragma", "busy_timeout(5000)")
-	u.RawQuery = q.Encode()
-	db, err := sql.Open("sqlite", u.String())
+	fi, err := os.Stat(path)
 	if err != nil {
 		return nil, st, err
 	}
-	defer db.Close()
-	db.SetMaxOpenConns(1)
+	if !fi.Mode().IsRegular() {
+		return nil, st, errors.New("not a regular file")
+	}
+	if fi.Size() > maxDBSize {
+		st.Oversized++
+		return nil, st, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, dbTimeout)
+	defer cancel()
+	db, closeDB, err := openReadOnly(path, fi.Size())
+	if err != nil {
+		return nil, st, err
+	}
+	defer closeDB()
 
 	projects := map[string]string{} // session id -> worktree
 	if rows, err := db.QueryContext(ctx, "SELECT s.id, p.worktree FROM session s JOIN project p ON p.id = s.project_id"); err == nil {
@@ -227,7 +320,7 @@ func (o OpenCodeFamily) ParsePath(ctx context.Context, path string) ([]model.Eve
 		rows.Close()
 	}
 	steps := map[string]*ocTokens{} // message id -> summed step-finish tokens
-	if rows, err := db.QueryContext(ctx, "SELECT message_id, data FROM part WHERE json_extract(data, '$.type') = 'step-finish'"); err == nil {
+	if rows, err := db.QueryContext(ctx, "SELECT message_id, data FROM part WHERE length(data) <= ? AND json_extract(data, '$.type') = 'step-finish'", maxRowData); err == nil {
 		for rows.Next() {
 			var id, data string
 			if rows.Scan(&id, &data) != nil {
@@ -245,22 +338,27 @@ func (o OpenCodeFamily) ParsePath(ctx context.Context, path string) ([]model.Eve
 		rows.Close()
 	}
 
-	rows, err := db.QueryContext(ctx, "SELECT id, session_id, time_created, data FROM message")
+	rows, err := db.QueryContext(ctx, "SELECT id, session_id, time_created, CASE WHEN length(data) <= ? THEN data END FROM message", maxRowData)
 	if err != nil {
 		return nil, st, err
 	}
 	defer rows.Close()
 	var evs []model.Event
 	for rows.Next() {
-		var id, sid, data string
+		var id, sid string
 		var created int64
+		var data sql.NullString
 		if rows.Scan(&id, &sid, &created, &data) != nil {
 			st.Malformed++
 			continue
 		}
 		st.Lines++
+		if !data.Valid {
+			st.Oversized++
+			continue
+		}
 		var m ocMessage
-		if json.Unmarshal([]byte(data), &m) != nil {
+		if json.Unmarshal([]byte(data.String), &m) != nil {
 			st.Malformed++
 			continue
 		}
@@ -280,7 +378,10 @@ func (o OpenCodeFamily) ParsePath(ctx context.Context, path string) ([]model.Eve
 			evs = append(evs, e)
 		}
 	}
-	return evs, st, rows.Err()
+	if err := rows.Err(); err != nil {
+		return evs, st, err
+	}
+	return evs, st, nil
 }
 
 func addOC(a, b *ocTokens) *ocTokens {

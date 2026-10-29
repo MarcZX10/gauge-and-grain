@@ -112,7 +112,7 @@ func TestDrillDownBackAndFilters(t *testing.T) {
 	press(m, "4") // Models
 	first := m.groups()[0]
 	press(m, "enter")
-	if m.tab != tabOverview || len(m.filter.Models) != 1 || m.sum.Total.Tokens() >= all || m.sum.Total.Tokens() != first.Tokens() {
+	if m.tab != tabOverview || len(m.filter.ModelsExact) != 1 || m.sum.Total.Tokens() >= all || m.sum.Total.Tokens() != first.Tokens() {
 		t.Fatalf("drill-down should narrow to the model: tab=%d tokens=%d want %d", m.tab, m.sum.Total.Tokens(), first.Tokens())
 	}
 	if !strings.Contains(m.View(), "model:") {
@@ -274,6 +274,9 @@ func TestRepeatedFramesAreCachedAndCheap(t *testing.T) {
 func TestInteractionsAreFastOnLargeHistory(t *testing.T) {
 	if testing.Short() {
 		t.Skip("large history")
+	}
+	if raceEnabled {
+		t.Skip("wall-clock limits do not apply under the race detector; the normal run checks them")
 	}
 	pt, _ := pricing.Load("")
 	var evs []model.Event
@@ -505,4 +508,53 @@ func labelsOf(gs []*agg.Group) (out []string) {
 		out = append(out, g.Label)
 	}
 	return
+}
+
+// Drilling into a row must show exactly that row: "gpt-5" is not a substring
+// filter that also pulls in "gpt-5.4".
+func TestDrillIntoAModelShowsOnlyThatModel(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	base := m.events[0]
+	short, long := base, base
+	short.Model, short.Key, short.Input, short.Output, short.Provider = "gpt-5", "s1", 100, 0, "claude"
+	long.Model, long.Key, long.Input, long.Output, long.Provider = "gpt-5.4", "l1", 900, 0, "claude"
+	m.events = append(m.events, short, long)
+	m.idx = agg.NewIndex(m.events, m.cfg.Prices, time.UTC)
+	m.applyPeriod()
+	resize(m, 120, 40)
+	press(m, "4")
+	row := -1
+	for i, g := range m.groups() {
+		if g.Label == "gpt-5 (claude)" { // the name is shared with codex, so it is disambiguated
+			row = i
+		}
+	}
+	if row < 0 {
+		t.Fatalf("no gpt-5 row: %v", labelsOf(m.groups()))
+	}
+	want := m.groups()[row].Tokens() // includes the fixture's own gpt-5 calls
+	m.cursor[tabModels] = row
+	press(m, "enter")
+	if got := m.sum.Total.Tokens(); got != want {
+		t.Errorf("the drill-down must show the row (%d tokens), got %d: gpt-5.4 (900) was pulled in", want, got)
+	}
+}
+
+// Drilling into a day compares that one day with the day before, not with
+// the whole period the view was showing.
+func TestDayDrillComparesWithTheDayBefore(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	press(m, "2") // Daily
+	press(m, "enter")
+	if !m.filter.PrevFrom.IsZero() || !m.filter.PrevTo.IsZero() {
+		t.Errorf("day drill must not keep the period's comparison window: %v..%v", m.filter.PrevFrom, m.filter.PrevTo)
+	}
+	pf, pt := agg.PrevWindow(m.filter.From, m.filter.To, time.UTC)
+	if n := agg.DaysBetween(pf, pt, time.UTC); n != 1 {
+		t.Errorf("the comparison for one day must be one day, got %d", n)
+	}
+	if m.sum.Prev == nil {
+		t.Error("the day drill should still show a comparison")
+	}
 }

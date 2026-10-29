@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/MarcZX10/gauge-and-grain/internal/agg"
 	"testing"
 	"time"
 )
@@ -68,19 +69,64 @@ func TestParsePeriod(t *testing.T) {
 
 func TestShiftCustomAndMonthRanges(t *testing.T) {
 	loc := time.UTC
-	p, _ := parsePeriod("2026-10", time.Now(), loc)
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, loc)
+	p, _ := parsePeriod("2026-10", now, loc)
 	p = p.shifted(-1)
-	if p.from.Format("2006-01-02") != "2026-09-01" || p.to.Format("2006-01-02") != "2026-10-01" {
-		t.Errorf("a whole month moves by whole months: %v → %v", p.from, p.to)
+	if f, to := p.window(now, loc); f.Format("2006-01-02") != "2026-09-01" || to.Format("2006-01-02") != "2026-10-01" {
+		t.Errorf("a whole month moves by whole months: %v → %v", f, to)
 	}
-	q, _ := parsePeriod("2026-10-01..2026-10-10", time.Now(), loc)
+	q, _ := parsePeriod("2026-10-01..2026-10-10", now, loc)
 	q = q.shifted(-1)
-	if q.from.Format("2006-01-02") != "2026-09-21" || q.to.Format("2006-01-02") != "2026-10-01" {
-		t.Errorf("a 10-day range moves by 10 days: %v → %v", q.from, q.to)
+	if f, to := q.window(now, loc); f.Format("2006-01-02") != "2026-09-21" || to.Format("2006-01-02") != "2026-10-01" {
+		t.Errorf("a 10-day range moves by 10 days: %v → %v", f, to)
 	}
 	a := periodState{preset: presetIndex("all")}
 	if a.canShift() || a.shifted(-1).shift != 0 {
 		t.Error("all time cannot be shifted")
+	}
+}
+
+// Moving a typed range forward must stop at the range as typed: the window
+// never slides past the present, and "." returns to the range itself.
+func TestCustomRangeNeverMovesIntoTheFutureAndCanReturn(t *testing.T) {
+	loc := time.UTC
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, loc)
+	p, _ := parsePeriod("14d", now, loc)
+	f0, t0 := p.window(now, loc)
+	p = p.shifted(1)
+	if f, to := p.window(now, loc); !f.Equal(f0) || !to.Equal(t0) || p.shift != 0 {
+		t.Errorf("moving later from the typed range must not go past it: %v..%v shift=%d", f, to, p.shift)
+	}
+	p = p.shifted(-1).shifted(-1)
+	if p.shift != 2 || p.name() != "Last 14 days ◂2" {
+		t.Errorf("two windows back: shift=%d name=%q", p.shift, p.name())
+	}
+	f, to := p.window(now, loc)
+	if got := to.Format("2006-01-02"); got != "2026-10-02" || f.Format("2006-01-02") != "2026-09-18" {
+		t.Errorf("two windows back from 16–29 Oct is 18 Sep to 1 Oct: %v..%v", f, to)
+	}
+}
+
+// Across a daylight-saving change, 14 days is 14 calendar days even though
+// the clock shows 13 days 23 hours.
+func TestShiftAcrossDaylightSavingKeepsCalendarDays(t *testing.T) {
+	madrid, err := time.LoadLocation("Europe/Madrid")
+	if err != nil {
+		t.Skip("no tz database:", err)
+	}
+	now := time.Date(2026, 11, 3, 12, 0, 0, 0, madrid)
+	p, _ := parsePeriod("2026-10-20..2026-11-02", now, madrid)
+	f, to := p.window(now, madrid)
+	if got := agg.DaysBetween(f, to, madrid); got != 14 {
+		t.Fatalf("the typed range is 14 days: %d", got)
+	}
+	p = p.shifted(-1)
+	f2, to2 := p.window(now, madrid)
+	if got := agg.DaysBetween(f2, to2, madrid); got != 14 || !to2.Equal(f) {
+		t.Errorf("the window before must be 14 whole days and end where this one starts: %d %v %v", got, to2, f)
+	}
+	if f2.Format("2006-01-02 15:04") != "2026-10-06 00:00" {
+		t.Errorf("start of the previous window: %v", f2)
 	}
 }
 

@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/MarcZX10/gauge-and-grain/internal/agg"
 )
 
 // A period is what the user means by "the time I am looking at". It is
@@ -67,19 +69,39 @@ type periodState struct {
 	label  string    // custom ranges only
 }
 
-// window returns [from, to); both zero means "all time".
+// window returns [from, to); both zero means "all time". A custom range is
+// its typed dates moved back by shift windows of its own length.
 func (p periodState) window(now time.Time, loc *time.Location) (time.Time, time.Time) {
 	if p.preset == customPreset {
-		return p.from, p.to
+		return moveWindow(p.from, p.to, loc, -p.shift)
 	}
 	return presets[p.preset].span(now, loc, p.shift)
 }
 
-func (p periodState) name() string {
-	if p.preset == customPreset {
-		return p.label
+// moveWindow shifts [from, to) by k times its own length, in whole local
+// calendar days (or whole months for a month range). Durations are not added:
+// across a daylight-saving change a 14-day range is 14 days and an hour long.
+func moveWindow(from, to time.Time, loc *time.Location, k int) (time.Time, time.Time) {
+	if to.Sub(from) >= 28*24*time.Hour && isWholeMonths(from.In(loc), to.In(loc)) {
+		months := monthsBetween(from.In(loc), to.In(loc))
+		return from.In(loc).AddDate(0, k*months, 0), to.In(loc).AddDate(0, k*months, 0)
 	}
-	n := presets[p.preset].label
+	n := agg.DaysBetween(from, to, loc)
+	return addDaysIn(from, loc, k*n), addDaysIn(to, loc, k*n)
+}
+
+// addDaysIn moves t by whole calendar days in loc, keeping its wall-clock time.
+func addDaysIn(t time.Time, loc *time.Location, n int) time.Time {
+	y, m, d := t.In(loc).Date()
+	h, mi, s := t.In(loc).Clock()
+	return time.Date(y, m, d+n, h, mi, s, t.Nanosecond(), loc)
+}
+
+func (p periodState) name() string {
+	n := p.label
+	if p.preset != customPreset {
+		n = presets[p.preset].label
+	}
 	if p.shift > 0 {
 		n += fmt.Sprintf(" ◂%d", p.shift)
 	}
@@ -91,19 +113,11 @@ func (p periodState) canShift() bool {
 	return p.preset == customPreset || presets[p.preset].id != "all"
 }
 
-// shifted moves the window by one period length. delta -1 is earlier.
+// shifted moves the window by one period length: delta -1 is earlier, +1
+// later. It never goes past the period as typed or chosen, so the window
+// cannot slide into the future.
 func (p periodState) shifted(delta int) periodState {
 	if !p.canShift() {
-		return p
-	}
-	if p.preset == customPreset {
-		d := p.to.Sub(p.from)
-		if p.to.Sub(p.from) >= 28*24*time.Hour && isWholeMonths(p.from, p.to) {
-			months := monthsBetween(p.from, p.to)
-			p.from, p.to = p.from.AddDate(0, delta*months, 0), p.to.AddDate(0, delta*months, 0)
-		} else {
-			p.from, p.to = p.from.Add(time.Duration(delta)*d), p.to.Add(time.Duration(delta)*d)
-		}
 		return p
 	}
 	p.shift -= delta // earlier (-1) means one more window back

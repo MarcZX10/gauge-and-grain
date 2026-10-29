@@ -1,8 +1,10 @@
 package providers
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -189,7 +191,8 @@ func FuzzParsersNeverPanic(f *testing.F) {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, s string) {
-		for _, p := range []Provider{Claude{}, Codex{}, Gemini{}, Qwen{}, Pi{}, vscodeExts[0], vscodeExts[1]} {
+		for _, p := range []Provider{Claude{}, Codex{}, Gemini{}, Qwen{}, Pi{}, opencodeFamily[0], opencodeFamily[1],
+			vscodeExts[0], vscodeExts[1], vscodeExts[2], vscodeExts[3]} {
 			if _, _, err := ParseAll(p, "x.jsonl", strings.NewReader(s+"\n"+s)); err != nil {
 				t.Fatal(err)
 			}
@@ -200,4 +203,64 @@ func FuzzParsersNeverPanic(f *testing.F) {
 			}
 		}
 	})
+}
+
+// A session that started on an older Codex (cumulative token_count events)
+// and continued on a newer one (exact records) keeps both: the old usage is
+// not thrown away, and token_count events after the first record (which only
+// repeat what the records say) are not counted twice.
+func TestCodexMixedLegacyThenRecords(t *testing.T) {
+	cnt := func(ts string, in, out int) string {
+		return fmt.Sprintf(`{"timestamp":"%s","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":%d,"output_tokens":%d,"total_tokens":%d}}}}`, ts, in, out, in+out)
+	}
+	rec := func(ts, id string, in, out int) string {
+		return fmt.Sprintf(`{"timestamp":"%s","type":"token_usage_record","payload":{"response_id":"%s","usage":{"input_tokens":%d,"output_tokens":%d}}}`, ts, id, in, out)
+	}
+	lines := []string{
+		`{"timestamp":"2026-10-01T10:00:00Z","type":"turn_context","payload":{"model":"gpt-5.4","cwd":"/w/a"}}`,
+		cnt("2026-10-01T10:00:01Z", 100, 50), cnt("2026-10-01T10:00:02Z", 300, 100),
+		rec("2026-10-01T10:01:00Z", "r1", 10, 5),
+		cnt("2026-10-01T10:01:01Z", 310, 105), // repeats r1: must not be counted
+		rec("2026-10-01T10:02:00Z", "r2", 20, 8),
+	}
+	full := strings.Join(lines, "\n") + "\n"
+	evs, _, err := ParseAll(Codex{}, "/x/s.jsonl", strings.NewReader(full))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var total int64
+	for i := range evs {
+		total += evs[i].Total()
+	}
+	if len(evs) != 4 || total != 400+(10+5)+(20+8) {
+		t.Fatalf("want 2 legacy deltas (400 tokens) + 2 records (43), got %d events totalling %d: %+v", len(evs), total, evs)
+	}
+	// Resuming from any line boundary gives the same events.
+	for cut := 1; cut < len(lines); cut++ {
+		p1 := Codex{}.NewParser("/x/s.jsonl", nil)
+		for _, l := range lines[:cut] {
+			p1.Line([]byte(l))
+		}
+		e1, st1 := p1.Result()
+		p2 := Codex{}.NewParser("/x/s.jsonl", &Resume{Events: append([]model.Event(nil), e1...), Stats: st1, State: p1.State()})
+		for _, l := range lines[cut:] {
+			p2.Line([]byte(l))
+		}
+		e2, _ := p2.Result()
+		if !reflect.DeepEqual(e2, evs) {
+			t.Fatalf("resume at %d differs:\n%+v\n%+v", cut, e2, evs)
+		}
+	}
+}
+
+// The saved resume state must not duplicate the events.
+func TestCodexStateDoesNotCarryEvents(t *testing.T) {
+	p := Codex{}.NewParser("/x/s.jsonl", nil)
+	for i := 0; i < 200; i++ {
+		p.Line([]byte(fmt.Sprintf(`{"timestamp":"2026-10-01T10:00:00Z","type":"token_usage_record","payload":{"response_id":"r%d","usage":{"input_tokens":1,"output_tokens":1}}}`, i)))
+		p.Line([]byte(fmt.Sprintf(`{"timestamp":"2026-10-01T10:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":%d,"output_tokens":%d,"total_tokens":%d}}}}`, i*2+2, i*2+2, i*4+4)))
+	}
+	if n := len(p.State()); n > 400 {
+		t.Errorf("resume state is %d bytes: it must stay small and independent of the number of events", n)
+	}
 }

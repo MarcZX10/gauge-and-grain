@@ -3,6 +3,8 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,9 +56,12 @@ func (DeepSeek) dir() string {
 
 func (d DeepSeek) Files() []string {
 	var out []string
-	for _, name := range []string{"session.jsonl.zstd", "session.v4.jsonl.zstd"} {
-		m, _ := filepath.Glob(filepath.Join(d.dir(), "*", "*", name))
-		out = append(out, m...)
+	for _, ws := range subdirs(d.dir()) {
+		for _, sess := range subdirs(ws) {
+			for _, name := range []string{"session.jsonl.zstd", "session.v4.jsonl.zstd"} {
+				out = append(out, listFiles(sess, name)...)
+			}
+		}
 	}
 	return out
 }
@@ -109,16 +114,20 @@ func (DeepSeek) ParsePath(ctx context.Context, path string) ([]model.Event, mode
 		return nil, st, err
 	}
 	defer f.Close()
-	zr, err := zstd.NewReader(&ctxReader{ctx, f})
+	// A hostile archive can expand a few KB into gigabytes: bound the window,
+	// the decoder memory and the decompressed size.
+	zr, err := zstd.NewReader(&ctxReader{ctx, f},
+		zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxWindow(64<<20), zstd.WithDecoderMaxMemory(256<<20))
 	if err != nil {
 		return nil, st, err
 	}
 	defer zr.Close()
+	lr := &limitedReader{r: zr, n: maxDecompressed}
 
 	var evs []model.Event
 	seen := map[string]bool{}
 	session, project := filepath.Base(filepath.Dir(path)), ""
-	_, err = ReadLines(zr, &st, true, func(line []byte) {
+	_, err = ReadLines(lr, &st, true, func(line []byte) {
 		st.Lines++
 		var ev dshEvent
 		if json.Unmarshal(line, &ev) != nil {
@@ -159,7 +168,39 @@ func (DeepSeek) ParsePath(ctx context.Context, path string) ([]model.Event, mode
 			evs = append(evs, e)
 		}
 	})
+	if lr.hit {
+		st.Oversized++ // the archive expands beyond the limit: what was read is kept
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		err = nil // a session still being written, or half copied: keep what decoded
+	}
 	return evs, st, err
+}
+
+// maxDecompressed bounds what one archive may expand to.
+var maxDecompressed int64 = 1 << 30
+
+// limitedReader stops after n bytes and remembers that it did.
+type limitedReader struct {
+	r   io.Reader
+	n   int64
+	hit bool
+}
+
+func (l *limitedReader) Read(p []byte) (int, error) {
+	if l.n <= 0 {
+		var one [1]byte
+		if n, _ := l.r.Read(one[:]); n > 0 {
+			l.hit = true
+		}
+		return 0, io.EOF
+	}
+	if int64(len(p)) > l.n {
+		p = p[:l.n]
+	}
+	n, err := l.r.Read(p)
+	l.n -= int64(n)
+	return n, err
 }
 
 // ctxReader aborts a long read when the scan is cancelled.
