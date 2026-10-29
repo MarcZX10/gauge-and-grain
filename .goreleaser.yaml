@@ -1,0 +1,22 @@
+version: 2
+project_name: gg
+builds:
+  - id: gg
+    main: ./cmd/gg
+    binary: gg
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags: ["-s -w -X main.version={{.Version}}"]
+archives:
+  - formats: [tar.gz]
+    # stable names so the installers can use releases/latest/download/<name>
+    name_template: "gg_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files: [README.md, docs/*]
+checksum:
+  name_template: checksums.txt
+changelog:
+  disable: true
