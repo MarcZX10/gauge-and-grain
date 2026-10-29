@@ -127,8 +127,8 @@ stays visible on a narrow terminal too.
 
 **Tools** counts the tool calls each reply made in Claude Code transcripts (for example `Bash`, `Read`, or an MCP tool such
 as `mcp__docs__guide`), and lists skills under `skill:<name>`. Each call is attributed to the reply that made it, so the
-counts follow the same period and filters as everything else. Other tools' logs do not record tool calls, so they do not
-appear there.
+counts follow the same period and filters as everything else. Only Claude Code is read for this for now: Codex records its
+tool calls too, but gg does not read them yet.
 
 While the first scan runs, `q` quits and `Esc` cancels the scan (finished files stay cached).
 

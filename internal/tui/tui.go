@@ -1904,8 +1904,8 @@ func (m *model_) toolsLines() []string {
 		return append(out,
 			"  "+t.Dim("No tool calls in this period."),
 			"",
-			"  "+t.Dim("Claude Code transcripts record which tools and skills each reply used. The logs gg reads"),
-			"  "+t.Dim("for other tools do not record tool calls, so their totals are not in this view."))
+			"  "+t.Dim("Claude Code transcripts record which tools and skills each reply used."),
+			"  "+t.Dim("Codex records tool calls too, but gg does not read them yet."))
 	}
 	nameW := max(12, min(40, W-34))
 	section := func(title string, list []agg.ToolStat) {
