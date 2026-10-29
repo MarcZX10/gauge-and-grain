@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/MarcZX10/gauge-and-grain/internal/agg"
 	"github.com/MarcZX10/gauge-and-grain/internal/render"
 )
 
@@ -212,5 +213,40 @@ func TestGlyphFoldIsCompleteForAscii(t *testing.T) {
 	}
 	if (render.Theme{}).Fold("█") != "█" {
 		t.Error("the fold must not touch colour output")
+	}
+}
+
+// The calendar shades the busiest day darkest and leaves days outside the data blank.
+func TestActivityCalendar(t *testing.T) {
+	var days []*agg.Group
+	for i, tok := range []int64{0, 10, 100, 0, 50} { // 2026-10-05 (Mon) .. 2026-10-09 (Fri)
+		g := &agg.Group{Key: "2026-10-0" + string(rune('5'+i)), Label: "x"}
+		g.Input = tok
+		days = append(days, g)
+	}
+	lines := heatmapLines(render.Theme{ASCII: true}, days, 40)
+	if len(lines) != 7 {
+		t.Fatalf("one row per weekday, got %d", len(lines))
+	}
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "█") || !strings.Contains(joined, "·") {
+		t.Errorf("the busiest day is a full block and an idle day a dot: %q", joined)
+	}
+	if heatGlyph(0, 100) != "·" || heatGlyph(100, 100) != "█" || heatGlyph(1, 100) != "░" {
+		t.Error("shades")
+	}
+}
+
+// The calendar appears on the Daily view when there is room, and not in a short terminal.
+func TestDailyCalendarOnlyWhenThereIsRoom(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	press(m, "2")
+	if m.geometry().heatH == 0 || !strings.Contains(m.View(), "Activity") {
+		t.Error("a tall terminal shows the activity calendar")
+	}
+	resize(m, 120, 24)
+	if m.geometry().heatH != 0 {
+		t.Error("a short terminal keeps the chart and table")
 	}
 }

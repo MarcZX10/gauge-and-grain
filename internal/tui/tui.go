@@ -528,7 +528,8 @@ func (m *model_) chartDayAt(x, y int) int {
 	}
 	g := m.geometry()
 	h := g.chartH - 3
-	if g.chartH == 0 || y < bodyTop+1 || y >= bodyTop+1+h {
+	top := bodyTop + g.heatH // the chart panel starts under the calendar
+	if g.chartH == 0 || y < top+1 || y >= top+1+h {
 		return -1
 	}
 	w, n := m.width-4, len(m.sum.ByDay)
@@ -866,6 +867,7 @@ func (m *model_) filterText() string { return strings.Join(m.filterChips(), " �
 // ---- geometry ------------------------------------------------------------
 
 type geom struct {
+	heatH    int // rows of the Daily activity calendar (0 = none)
 	chartH   int // rows of the Daily chart panel (0 = none)
 	tableTop int // screen row of the table panel's top border
 	tableH   int // rows of the table panel
@@ -882,6 +884,10 @@ func (m *model_) geometry() geom {
 	g.tableW = W
 	remaining := H
 	if m.tab == tabDaily && H >= 16 {
+		if H >= 30 { // room for the calendar as well as the chart and table
+			g.heatH = 9
+			remaining -= g.heatH
+		}
 		g.chartH = 9
 		remaining -= g.chartH
 	}
@@ -901,7 +907,7 @@ func (m *model_) geometry() geom {
 		}
 		g.tableH = min(remaining, max(len(m.groups())+3, floor))
 	}
-	g.tableTop = bodyTop + g.chartH
+	g.tableTop = bodyTop + g.heatH + g.chartH
 	g.vis = max(1, g.tableH-3) // border, header, border
 	return g
 }
@@ -1526,6 +1532,10 @@ func (m *model_) tableView() []string {
 	gs := m.groups()
 	var out []string
 
+	if g.heatH > 0 {
+		out = append(out, t.Panel(fmt.Sprintf("Activity · last %d weeks", heatWeeks(m.sum.ByDay, W-4)),
+			heatmapLines(t, m.sum.ByDay, W-4), W, render.CAccent)...)
+	}
 	if g.chartH > 0 {
 		vals := make([]float64, len(m.sum.ByDay))
 		for i, d := range m.sum.ByDay {
@@ -1797,4 +1807,79 @@ func (m *model_) exportView() {
 		return
 	}
 	m.note = "exported " + by + " view to ./" + name
+}
+
+// heatWeeks is how many week columns the activity calendar draws in width w.
+func heatWeeks(days []*agg.Group, w int) int {
+	return len(heatCols(days, w))
+}
+
+// heatCols returns the Monday of each week the calendar shows, oldest first:
+// the most recent weeks of the data that fit in w columns.
+func heatCols(days []*agg.Group, w int) []time.Time {
+	if len(days) == 0 {
+		return nil
+	}
+	first, err1 := time.Parse("2006-01-02", days[0].Key)
+	last, err2 := time.Parse("2006-01-02", days[len(days)-1].Key)
+	if err1 != nil || err2 != nil {
+		return nil
+	}
+	monday := func(d time.Time) time.Time { return d.AddDate(0, 0, -((int(d.Weekday()) + 6) % 7)) }
+	endMon, firstMon := monday(last), monday(first)
+	total := int(endMon.Sub(firstMon).Hours()/24)/7 + 1
+	n := min(total, max(1, (w-2)/2)) // a 2-column cell, and a 2-column weekday label
+	out := make([]time.Time, n)
+	for i := range out {
+		out[i] = endMon.AddDate(0, 0, -7*(n-1-i))
+	}
+	return out
+}
+
+// heatmapLines draws the days as a calendar: one row per weekday, one
+// column per week, the busier the day the denser its glyph. Days outside
+// the data are left blank, and zero-use days are a dot.
+func heatmapLines(t render.Theme, days []*agg.Group, w int) []string {
+	weeks := heatCols(days, w)
+	byDay := map[string]int64{}
+	var peak int64
+	for _, d := range days {
+		byDay[d.Key] = d.Tokens()
+		peak = max(peak, d.Tokens())
+	}
+	first, _ := time.Parse("2006-01-02", days[0].Key)
+	last, _ := time.Parse("2006-01-02", days[len(days)-1].Key)
+	letters := []string{"M", "T", "W", "T", "F", "S", "S"}
+	lines := make([]string, 7)
+	for r := range lines {
+		var sb strings.Builder
+		sb.WriteString(t.Dim(letters[r]) + " ")
+		for _, mon := range weeks {
+			d := mon.AddDate(0, 0, r)
+			switch {
+			case d.Before(first) || d.After(last):
+				sb.WriteString("  ")
+			default:
+				v := byDay[d.Format("2006-01-02")]
+				sb.WriteString(t.FG(render.CAccent, heatGlyph(v, peak)) + " ")
+			}
+		}
+		lines[r] = sb.String()
+	}
+	return lines
+}
+
+// heatGlyph picks a shade for a day's tokens relative to the busiest day.
+func heatGlyph(v, peak int64) string {
+	switch {
+	case v <= 0 || peak <= 0:
+		return "·"
+	case float64(v) >= 0.75*float64(peak):
+		return "█"
+	case float64(v) >= 0.5*float64(peak):
+		return "▓"
+	case float64(v) >= 0.25*float64(peak):
+		return "▒"
+	}
+	return "░"
 }
