@@ -54,6 +54,7 @@ gg report --days 7       # last week
 gg report --from 2026-10-01 --to 2026-10-15
 gg report --provider codex --model gpt-5
 gg report --project my-app --daily
+gg notes                 # how far to trust the numbers: estimates, gaps, unpriced models, sources, prices
 gg tui --all             # interactive, whole history
 gg export --format json  > usage.json
 gg export --format csv --by model > models.csv     # --by day|provider|model|project|session|events
@@ -71,6 +72,7 @@ Tokens    5.8K          no usage in the previous period to compare with
 Est. cost ≥ $0.01       partial: 200 tokens unpriced (1 model)
 Sessions  4             12 API calls (de-duplicated)
 Sources   Claude Code · OpenAI Codex · Gemini CLI (not found)
+Notes     ⚠ 1 note needs attention · 7 in total · run `gg notes`
 
 TOKEN MIX  what each kind of token means
   input                    1.2K     20%  █▌░░░░░░  new, uncached prompt tokens
@@ -85,24 +87,34 @@ MODELS  unpriced = no price known; its tokens are counted but cost is excluded
   gpt-5.4                                    2.4K     41%     $0.0039      1  █████▋░░░░░░░░
   claude-sonnet-5-5                          2.3K     39%     $0.0067      1  █████▍░░░░░░░░
   mystery-model-9             unpriced        200    3.5%    unpriced      1  ▍░░░░░░░░░░░░░
-
-READING THIS HONESTLY
-  • Cost is an estimate of what these tokens would cost at public API list prices — not your
-    subscription bill. Plans like Claude Pro/Max or ChatGPT bill differently, so it will not
-    match an invoice.
-  • Unpriced: mystery-model-9. Their tokens are included above, their cost is not. …
-  • Ignored 6 malformed record(s), clamped 3 implausible counter(s), skipped 0 oversized
-    line(s). Totals exclude them.
 ```
+
+The caveats are **not** buried in the report: the `Notes` line under the headline numbers says how
+many need attention, and `gg notes` (or `gg report --notes`) prints them in full — the "estimate, not
+a bill" caveat, unpriced models, providers that were found but not parsed, malformed records,
+de-duplication, and the price sources with their dates.
 
 (Real output from the repository's test fixtures, abbreviated — they deliberately contain an unpriced model and malformed lines.)
 
 ### The TUI
 
+`gg` on a terminal opens a dashboard: headline cards (tokens, estimated cost, sessions, cache hits)
+with change versus the previous period, a daily bar chart, the token mix, and top providers, models and
+projects. Providers keep one colour everywhere (Claude orange, Codex blue); yellow always means
+"caution" (estimate, unpriced, partial). Each list view has a **details panel** for the selected row
+(composition, cost, coverage, first/last seen).
+
+| View | Shows |
+|---|---|
+| `1` Overview | cards, trend, token mix, providers / models / projects |
+| `2` Daily | bar chart with the selected day highlighted, per-day table |
+| `3`–`6` Providers · Models · Projects · Sessions | ranked list + details of the selected row |
+| `7` Notes | **all caveats in one place**: estimates, unpriced models, gaps, sources, price dates. A `⚠N` badge on the tab (and a banner on the Overview) says when something needs attention |
+
 | Key | Action |
 |---|---|
-| `Tab` / `Shift+Tab`, `←` `→`, `1`–`6` | Overview · Daily · Providers · Models · Projects · Sessions |
-| `↑` `↓` / `j` `k`, `PgUp` `PgDn`, `g` `G` | move / scroll |
+| `←` `→` · `Tab` · `1`–`7` | switch view (`o` Overview, `n` Notes) |
+| `↑` `↓` · `j` `k` · `PgUp` `PgDn` · `g` `G` | move / scroll |
 | `Enter` | drill into the selected day, provider, model or project (filters the whole view) |
 | `Esc` / `Backspace` | undo the last drill-down → clear search → back to Overview |
 | `d` | range: 7 days → 30 days → 90 days → all time |
@@ -113,10 +125,14 @@ READING THIS HONESTLY
 | `r` | rescan (cached files are not re-read) |
 | `?` | help · `q` / `Ctrl-C` quit |
 
-The first scan of a large history shows a progress bar. **`Esc` cancels cleanly**: files already
-parsed stay cached, you see what was read so far (clearly marked partial), and the next run resumes.
-Below 40×8 the TUI asks for a bigger terminal instead of drawing garbage; narrower terminals drop
-columns and shorten labels.
+The **mouse** works too: click a view tab or a range chip (`7d 30d 90d all`), click a row to select
+it (click again to drill in), scroll with the wheel.
+
+The first scan of a large history shows a progress panel. **`Esc` cancels cleanly**: files already
+parsed stay cached, you see what was read so far (marked PARTIAL), and the next run resumes. Below
+40×8 the TUI asks for a bigger terminal instead of drawing garbage; narrower terminals drop columns,
+shorten labels and hide the details panel. Without colour (`NO_COLOR`, `--no-color`) it falls back to
+plain text and ASCII glyphs.
 
 ### Filters (report, tui, export)
 
@@ -130,7 +146,7 @@ columns and shorten labels.
 | `--project TEXT` | project path contains TEXT |
 
 Output: `--no-color` (also `NO_COLOR`, `TERM=dumb`, or piping), `--ascii`, `--no-cache`,
-`--prices FILE`.
+`--prices FILE`, and for `report`: `--daily` (per-day table), `--notes` (append the full notes).
 
 ## What the numbers mean
 

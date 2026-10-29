@@ -12,7 +12,7 @@ internal/providers  one adapter per tool: Detect, Files, NewParser
 internal/scan     parallel scan, incremental cache, global de-duplication, cancellation
 internal/pricing  embedded + user price tables, model matching, cost
 internal/agg      filters, groupings, previous-period comparison, coverage
-internal/render   report sections, tables, JSON/CSV export (shared by the TUI)
+internal/render   report sections, panels/charts, notes, JSON/CSV export (shared by the TUI)
 internal/tui      Bubble Tea interface
 ```
 
@@ -91,3 +91,16 @@ A provider whose format cannot be verified should stay detection-only (see `Gemi
 Tag `vX.Y.Z` → `.github/workflows/release.yml` runs the tests and GoReleaser, publishing
 `gg_<os>_<arch>.tar.gz` / `.zip` and `checksums.txt`. `scripts/install.sh` and `scripts/install.ps1`
 download the latest release and verify the checksum.
+
+## Notes and the UI
+
+Caveats are data, not decoration: `render.NoteItems` builds a list of `Note{Warn, Text}` from the same
+`Ctx` that feeds every view (cost caveat, unpriced models, providers found but unparsed, unreadable
+files, partial scans, per-provider field coverage, malformed/duplicate counts, price sources and
+dates). The report shows a one-line pointer, `gg notes` / `--notes` prints them, and the TUI has a
+dedicated Notes view plus a badge and banner — so a warning can never exist in one place and be
+missing in another.
+
+The TUI is a pure function of its model (`View()`), laid out from one `geometry()` that the mouse
+handler shares, and `tui_test.go` renders every view at sizes from 40×8 to 220×60 (colour and ASCII)
+asserting exact line counts and that no line is wider than the terminal.
