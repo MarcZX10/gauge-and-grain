@@ -117,7 +117,9 @@ projects. Providers keep one colour everywhere (Claude orange, Codex blue); yell
 | `↑` `↓` · `j` `k` · `PgUp` `PgDn` · `g` `G` | move / scroll |
 | `Enter` | drill into the selected day, provider, model or project (filters the whole view) |
 | `Esc` / `Backspace` | undo the last drill-down → clear search → back to Overview |
-| `d` | range: 7 days → 30 days → 90 days → all time |
+| `t` | **choose a period**: Today, Yesterday, Last 7/30/90 days, This/Last month, This year, All time — or type `2026-10`, `14d`, `2026`, `2026-10-01..2026-10-15` |
+| `d` · `D` | next / previous quick period (Today · 7d · 30d · 90d · All) |
+| `[` · `]` · `.` | move the period earlier / later by its own length (30d → the 30 days before; a month → the previous month); `.` returns to now |
 | `p` | cycle provider filter |
 | `/` | search model, project or session text |
 | `s` | sort by tokens or by estimated cost |
@@ -125,8 +127,13 @@ projects. Providers keep one colour everywhere (Claude orange, Codex blue); yell
 | `r` | rescan (cached files are not re-read) |
 | `?` | help · `q` / `Ctrl-C` quit |
 
-The **mouse** works too: click a view tab or a range chip (`7d 30d 90d all`), click a row to select
-it (click again to drill in), scroll with the wheel.
+**Periods are always explicit.** The header shows the active chip and the exact dates
+(`30d  30 Sep – 29 Oct 2026`), a shifted period is marked (`30d ◂1`), and the cards say what they are
+compared with (`▲ 12% vs 31 Aug–29 Sep`). Calendar periods compare with the previous *calendar* period
+(this month vs last month), rolling ones with the window of equal length just before.
+
+The **mouse** works too: click a view tab or a period chip (`Today 7d 30d 90d All`, `Pick…` opens the
+picker), click a row to select it (click again to drill in), scroll with the wheel.
 
 The first scan of a large history shows a progress panel. **`Esc` cancels cleanly**: files already
 parsed stay cached, you see what was read so far (marked PARTIAL), and the next run resumes. Below

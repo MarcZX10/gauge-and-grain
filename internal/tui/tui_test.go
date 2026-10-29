@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"github.com/MarcZX10/gauge-and-grain/internal/model"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,8 +43,9 @@ func fixtureModel(t *testing.T, th render.Theme) *model_ {
 	}
 	res := scan.Run(t.Context(), scan.Options{Providers: provs})
 	m := &model_{cfg: Config{Providers: provs, Detect: det, Prices: pt, Theme: th, Loc: time.UTC, RangeName: "all time", All: true},
-		rangeNm: "all time", res: res, events: res.Events, rangeIdx: len(ranges) - 1}
-	m.recompute()
+		rangeNm: "all time", res: res, events: res.Events, per: periodState{preset: presetIndex("all")}}
+	m.idx = agg.NewIndex(res.Events, pt, time.UTC)
+	m.applyPeriod()
 	return m
 }
 
@@ -154,7 +156,7 @@ func TestNotesTabIsVisibleAndFlagsWarnings(t *testing.T) {
 func TestMouseTabsRowsAndWheel(t *testing.T) {
 	m := fixtureModel(t, render.Theme{ASCII: true})
 	resize(m, 120, 40)
-	sp := m.tabSpans()
+	_, sp := m.tabLayout()
 	m.Update(tea.MouseMsg{X: sp[3][0] + 1, Y: 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 	if m.tab != tabModels {
 		t.Fatalf("click on tab 4 → tab %d", m.tab)
@@ -168,10 +170,14 @@ func TestMouseTabsRowsAndWheel(t *testing.T) {
 	if m.cursor[tabModels] <= 1 {
 		t.Error("wheel should move the cursor")
 	}
-	rs := m.rangeSpans()
-	m.Update(tea.MouseMsg{X: rs[0][0] + 1, Y: 0, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
-	if ranges[m.rangeIdx] != 7 || m.filter.From.IsZero() {
-		t.Error("click on the 7d chip should select the 7-day range")
+	_, chips := m.headerLayout()
+	for _, c := range chips {
+		if c.preset == presetIndex("7d") {
+			m.Update(tea.MouseMsg{X: c.x0 + 1, Y: 0, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+		}
+	}
+	if presets[m.per.preset].id != "7d" || m.filter.From.IsZero() {
+		t.Error("click on the 7d chip should select the 7-day period")
 	}
 }
 
@@ -184,5 +190,114 @@ func TestCancelledScanShowsPartialNotice(t *testing.T) {
 	}
 }
 
-var _ = fmt.Sprint
-var _ agg.Filter
+func TestPeriodPickerAndShifting(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	press(m, "t")
+	if !m.picker || !strings.Contains(strings.Join(strings.Fields(m.View()), " "), "Choose a period") {
+		t.Fatal("t must open the picker")
+	}
+	press(m, "down", "down", "down", "enter") // Last 30 days
+	if m.picker || presets[m.per.preset].id != "30d" {
+		t.Fatalf("picker selection: preset=%d picker=%v", m.per.preset, m.picker)
+	}
+	hdr := render.Strip(m.headerLine())
+	if !strings.Contains(hdr, "30d") || !strings.Contains(hdr, "–") {
+		t.Errorf("header must show the active chip and exact dates: %q", hdr)
+	}
+	from0 := m.filter.From
+	press(m, "[")
+	if m.per.shift != 1 || !m.filter.From.Before(from0) || !m.filter.To.Equal(from0) {
+		t.Errorf("[ must move one period earlier: shift=%d", m.per.shift)
+	}
+	press(m, "]")
+	if m.per.shift != 0 || !m.filter.From.Equal(from0) {
+		t.Error("] must move back")
+	}
+	press(m, "]")
+	if m.per.shift != 0 {
+		t.Error("cannot move into the future")
+	}
+	press(m, "t", "2", "0", "2", "6", "-", "1", "0", "enter")
+	if m.per.preset != customPreset || m.filter.From.Month() != time.October || m.filter.To.Month() != time.November {
+		t.Errorf("typed month: %+v", m.per)
+	}
+	press(m, "t", "n", "o", "p", "e", "enter")
+	if !m.picker || m.pickErr == "" {
+		t.Error("a bad period must show an error and keep the picker open")
+	}
+	press(m, "esc")
+	press(m, "d")
+	if m.per.preset == customPreset {
+		t.Error("d returns to the quick periods")
+	}
+}
+
+func TestPickerAndHeaderFitEverySize(t *testing.T) {
+	m := fixtureModel(t, render.Theme{Color: true})
+	for _, sz := range [][2]int{{40, 8}, {60, 20}, {100, 30}, {200, 50}} {
+		resize(m, sz[0], sz[1])
+		m.picker = true
+		for _, l := range strings.Split(m.View(), "\n") {
+			if render.Width(l) > sz[0] {
+				t.Fatalf("%v picker line too wide: %q", sz, render.Strip(l))
+			}
+		}
+		m.picker = false
+	}
+}
+
+func TestRepeatedFramesAreCachedAndCheap(t *testing.T) {
+	m := fixtureModel(t, render.Theme{Color: true})
+	resize(m, 150, 46)
+	_ = m.View()
+	v := m.cache[tabOverview].ver
+	for i := 0; i < 200; i++ { // scrolling / mouse motion must not rebuild
+		m.move(1)
+		m.move(-1)
+		_ = m.View()
+	}
+	if m.cache[tabOverview].ver != v || m.ver != v {
+		t.Error("view cache was rebuilt without a data change")
+	}
+	press(m, "p")
+	_ = m.View()
+	if m.cache[tabOverview].ver == v {
+		t.Error("a filter change must rebuild the view")
+	}
+}
+
+// A keypress that changes the data (filter, period) must feel instant even
+// with a very large history. The bound is generous (CI machines are slow);
+// the old per-event implementation took ~3.5 s for 270k events.
+func TestInteractionsAreFastOnLargeHistory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("large history")
+	}
+	pt, _ := pricing.Load("")
+	var evs []model.Event
+	models := []string{"claude-sonnet-5-5", "gpt-5.4", "claude-opus-5-5", "mystery"}
+	for i := 0; i < 200000; i++ {
+		evs = append(evs, model.Event{Provider: []string{"claude", "codex"}[i%2], Model: models[i%4],
+			Project: fmt.Sprint("/w/p", i%30), Session: fmt.Sprint("s", i%400),
+			Time:  time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(i%(150*24*60)) * time.Minute),
+			Input: 10, CacheRead: 100, Output: 5, Has: model.HasCacheRead})
+	}
+	res := &scan.Result{Events: evs, Files: map[string]int{"claude": 1, "codex": 1}}
+	m := &model_{cfg: Config{Prices: pt, Theme: render.Theme{Color: true}, Loc: time.UTC, Detect: map[string]providers.Detection{}, Providers: []providers.Provider{providers.Claude{}, providers.Codex{}}},
+		res: res, events: evs, per: periodState{preset: presetIndex("all")}}
+	t0 := time.Now()
+	m.idx = agg.NewIndex(evs, pt, time.UTC)
+	m.applyPeriod()
+	t.Logf("index + first summary: %v", time.Since(t0))
+	resize(m, 150, 46)
+	_ = m.View()
+	for _, k := range []string{"p", "d", "d", "t", "esc", "[", "]", "4", "down", "enter", "esc", "s"} {
+		start := time.Now()
+		press(m, k)
+		_ = m.View()
+		if el := time.Since(start); el > 400*time.Millisecond {
+			t.Errorf("key %q took %v on 200k events", k, el)
+		}
+	}
+}

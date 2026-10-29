@@ -57,6 +57,15 @@ merged within a file (streamed chunks: counters take the max) and **across files
 archived copies). The global pass uses a 64-bit hash of the key (collision odds ≈ 1e-7 at 5M events),
 interns repeated strings and drops the keys to keep memory flat.
 
+### Aggregation index
+`agg.NewIndex` folds events once into *cells* — one per (day, provider, model, project, session) — and
+prices each cell once (all events in a cell share a model, so they share a price). Every filter, period
+change or drill-down is then a pass over the cells, not over millions of events, and no regular
+expression or price lookup runs per event. On a 268k-call real history this is 1.9 ms per summary
+(it was 3.5 s when it re-walked the events), and `TestIndexEqualsNaivePerEventSummary` checks the index
+against a naive per-event computation for random filters and time zones. Date filters therefore have
+day granularity in the chosen time zone.
+
 ### Cancellation and progress
 `scan.Run(ctx, …)` takes a context; workers stop between and inside files (the reader checks the
 context). The CLI shows a one-line meter on stderr when it is a terminal (stdout stays clean for

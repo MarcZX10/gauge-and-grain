@@ -55,9 +55,6 @@ var tabNames = [numTabs]string{"Overview", "Daily", "Providers", "Models", "Proj
 var tabShort = [numTabs]string{"Ovw", "Day", "Prv", "Mdl", "Prj", "Ses", "Nts"}
 var tabLabel = [numTabs]string{"", "Day", "Provider", "Model", "Project", "Session", ""}
 
-// ranges the `d` key cycles through (0 = all time).
-var ranges = []int{7, 30, 90, 0}
-
 type sortBy int
 
 const (
@@ -81,19 +78,31 @@ type model_ struct {
 	cancelled bool
 	scanTook  time.Duration
 
-	tab      int
-	cursor   [numTabs]int
-	offset   [numTabs]int
-	filter   agg.Filter
-	rangeIdx int
-	provIdx  int // 0 = all
-	drill    []string
-	sum      *agg.Summary
-	sort     sortBy
-	search   bool
-	input    string
-	help     bool
-	rangeNm  string
+	tab     int
+	cursor  [numTabs]int
+	offset  [numTabs]int
+	filter  agg.Filter
+	per     periodState
+	picker  bool
+	pickSel int
+	pickIn  string
+	pickErr string
+	provIdx int // 0 = all
+	drill   []string
+	idx     *agg.Index
+	sum     *agg.Summary
+	cx      *render.Ctx // rebuilt by recompute; shared by every view
+	warn    int         // notes that need attention
+	ver     int         // bumped on every recompute; keys the render caches
+	cache   [numTabs]struct {
+		ver, w int
+		lines  []string
+	}
+	sort    sortBy
+	search  bool
+	input   string
+	help    bool
+	rangeNm string
 }
 
 type progressMsg scan.Progress
@@ -107,12 +116,7 @@ type startedMsg struct {
 // Run starts the TUI and blocks until the user quits.
 func Run(cfg Config) error {
 	m := &model_{cfg: cfg, filter: cfg.Filter, rangeNm: cfg.RangeName, loading: true, started: time.Now()}
-	m.rangeIdx = len(ranges) - 1
-	for i, d := range ranges {
-		if (d == cfg.DaysFlag && !cfg.All) || (d == 0 && cfg.All) {
-			m.rangeIdx = i
-		}
-	}
+	m.per = initialPeriod(cfg)
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := p.Run()
 	if m.cancel != nil {
@@ -162,7 +166,7 @@ func (m *model_) recompute() {
 	if m.provIdx > 0 {
 		f.Providers = []string{m.provList()[m.provIdx-1]}
 	}
-	m.sum = agg.Summarize(m.events, f, m.cfg.Prices, m.cfg.Loc)
+	m.sum = m.idx.Summarize(f)
 	if m.sort == byCost {
 		for _, gs := range [][]*agg.Group{m.sum.ByProvider, m.sum.ByModel, m.sum.ByProject, m.sum.BySession} {
 			sort.SliceStable(gs, func(i, j int) bool { return gs[i].Cost > gs[j].Cost })
@@ -171,6 +175,11 @@ func (m *model_) recompute() {
 	for i := range m.cursor {
 		m.cursor[i], m.offset[i] = 0, 0
 	}
+	m.cx = &render.Ctx{Sum: m.sum, Detect: m.cfg.Detect, Files: m.res.Files, Stats: m.res.Stats,
+		Cached: m.res.Cached, Parsed: m.res.Parsed, Duplicate: m.res.Duplicate, Errors: len(m.res.Errors),
+		Cancelled: m.cancelled, Prices: m.cfg.Prices, RangeName: m.rangeNm, Filters: m.filterText()}
+	m.warn, _ = render.NoteCounts(m.cx)
+	m.ver++
 }
 
 func (m *model_) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -194,7 +203,8 @@ func (m *model_) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cancelled = m.res.Cancelled
 		m.loading = false
 		m.scanTook = time.Since(m.started)
-		m.recompute()
+		m.idx = agg.NewIndex(m.events, m.cfg.Prices, m.cfg.Loc)
+		m.applyPeriod()
 	case tea.MouseMsg:
 		return m.mouse(msg)
 	case tea.KeyMsg:
@@ -222,6 +232,9 @@ func (m *model_) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	}
+	if m.picker {
+		return m.pickerKey(k)
 	}
 	if m.search {
 		switch s {
@@ -278,7 +291,17 @@ func (m *model_) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc", "backspace":
 		m.back()
 	case "d":
-		m.cycleRange()
+		m.cycleChip(1)
+	case "D":
+		m.cycleChip(-1)
+	case "t":
+		m.picker, m.pickIn, m.pickErr, m.pickSel = true, "", "", 0
+	case "[":
+		m.setPeriod(m.per.shifted(-1))
+	case "]":
+		m.setPeriod(m.per.shifted(1))
+	case ".":
+		m.setPeriod(periodState{preset: m.per.preset, from: m.per.from, to: m.per.to, label: m.per.label})
 	case "p":
 		m.provIdx = (m.provIdx + 1) % (len(m.provList()) + 1)
 		m.recompute()
@@ -290,7 +313,7 @@ func (m *model_) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "c":
 		m.filter.Text, m.filter.Models, m.filter.Projects, m.drill = "", nil, nil, nil
 		m.provIdx = 0
-		m.applyRange()
+		m.applyPeriod()
 	case "r", "R":
 		m.loading, m.cancelled, m.prog, m.started = true, false, scan.Progress{}, time.Now()
 		return m, tea.Batch(m.startScan(), tick())
@@ -312,15 +335,20 @@ func (m *model_) mouse(e tea.MouseMsg) (tea.Model, tea.Cmd) {
 	case e.Button == tea.MouseButtonLeft && e.Action == tea.MouseActionPress:
 		switch {
 		case e.Y == 0:
-			for i, sp := range m.rangeSpans() {
-				if e.X >= sp[0] && e.X < sp[1] {
-					m.rangeIdx = i
-					m.applyRange()
+			_, sp := m.headerLayout()
+			for _, c := range sp {
+				if e.X >= c.x0 && e.X < c.x1 {
+					if c.preset == pickerChip {
+						m.picker, m.pickIn, m.pickErr, m.pickSel = true, "", "", 0
+					} else {
+						m.setPeriod(periodState{preset: c.preset})
+					}
 				}
 			}
 		case e.Y == 1:
-			for i, sp := range m.tabSpans() {
-				if e.X >= sp[0] && e.X < sp[1] {
+			_, sp := m.tabLayout()
+			for i, c := range sp {
+				if e.X >= c[0] && e.X < c[1] {
 					m.tab = i
 				}
 			}
@@ -414,7 +442,7 @@ func (m *model_) back() {
 		case "project":
 			m.filter.Projects = nil
 		case "day":
-			m.applyRange()
+			m.applyPeriod()
 			return
 		}
 		m.recompute()
@@ -428,20 +456,49 @@ func (m *model_) back() {
 	m.tab = tabOverview
 }
 
-func (m *model_) cycleRange() {
-	m.rangeIdx = (m.rangeIdx + 1) % len(ranges)
-	m.applyRange()
+// chipPresets are the presets shown as header chips, in order.
+func chipPresets() []int {
+	var out []int
+	for i, p := range presets {
+		if p.chip != "" {
+			out = append(out, i)
+		}
+	}
+	return out
 }
 
-func (m *model_) applyRange() {
-	d := ranges[m.rangeIdx]
+// cycleChip moves to the next/previous quick period (Today, 7d, 30d, 90d, All).
+func (m *model_) cycleChip(d int) {
+	chips := chipPresets()
+	cur := -1
+	for i, c := range chips {
+		if c == m.per.preset {
+			cur = i
+		}
+	}
+	if cur < 0 { // on a calendar/custom period: start from the 30-day chip
+		cur = 2
+	}
+	m.setPeriod(periodState{preset: chips[(cur+d+len(chips))%len(chips)]})
+}
+
+func (m *model_) setPeriod(p periodState) {
+	m.per = p
+	m.applyPeriod()
+}
+
+// applyPeriod turns the selected period into a filter and recomputes.
+func (m *model_) applyPeriod() {
 	now := time.Now().In(m.cfg.Loc)
-	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, m.cfg.Loc)
-	if d == 0 {
-		m.filter.From, m.filter.To, m.rangeNm = time.Time{}, time.Time{}, "all time"
-	} else {
-		m.filter.From, m.filter.To = start.AddDate(0, 0, -(d-1)), start.AddDate(0, 0, 1)
-		m.rangeNm = render.RangeLabel(d)
+	m.filter.From, m.filter.To = m.per.window(now, m.cfg.Loc)
+	m.filter.PrevFrom, m.filter.PrevTo = m.per.previous(now, m.cfg.Loc)
+	m.rangeNm = m.per.name()
+	if d := spanText(m.filter.From, m.filter.To, m.cfg.Loc); d != "" {
+		m.rangeNm += " · " + d
+	} else if m.idx != nil {
+		if a, b := m.idx.Span(); !a.IsZero() {
+			m.rangeNm += " · " + spanText(a, b.AddDate(0, 0, 1), m.cfg.Loc)
+		}
 	}
 	var keep []string
 	for _, v := range m.drill {
@@ -451,6 +508,64 @@ func (m *model_) applyRange() {
 	}
 	m.drill = keep
 	m.recompute()
+}
+
+// initialPeriod maps the command-line range onto a period.
+func initialPeriod(cfg Config) periodState {
+	switch {
+	case cfg.All:
+		return periodState{preset: presetIndex("all")}
+	case cfg.Bounded:
+		for _, id := range []string{"today", "7d", "30d", "90d"} {
+			n := map[string]int{"today": 1, "7d": 7, "30d": 30, "90d": 90}[id]
+			if cfg.DaysFlag == n {
+				return periodState{preset: presetIndex(id)}
+			}
+		}
+		to := cfg.Filter.To
+		return periodState{preset: customPreset, from: to.AddDate(0, 0, -cfg.DaysFlag), to: to, label: cfg.RangeName}
+	}
+	return periodState{preset: customPreset, from: cfg.Filter.From, to: cfg.Filter.To, label: "Custom range"}
+}
+
+// pickerKey handles keys while the period picker is open.
+func (m *model_) pickerKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	entries := pickerEntries()
+	switch k.String() {
+	case "esc":
+		m.picker = false
+	case "up":
+		m.pickSel = max(0, m.pickSel-1)
+	case "down":
+		m.pickSel = min(len(entries)-1, m.pickSel+1)
+	case "enter":
+		if strings.TrimSpace(m.pickIn) == "" {
+			m.setPeriod(entries[m.pickSel].p)
+			m.picker = false
+			break
+		}
+		p, err := parsePeriod(m.pickIn, time.Now(), m.cfg.Loc)
+		if err != nil {
+			m.pickErr = err.Error()
+			break
+		}
+		m.setPeriod(p)
+		m.picker = false
+	case "backspace":
+		if r := []rune(m.pickIn); len(r) > 0 {
+			m.pickIn = string(r[:len(r)-1])
+		}
+		m.pickErr = ""
+	default:
+		if k.Type == tea.KeyRunes || k.Type == tea.KeySpace {
+			m.pickIn += string(k.Runes)
+			if k.Type == tea.KeySpace {
+				m.pickIn += " "
+			}
+			m.pickErr = ""
+		}
+	}
+	return m, nil
 }
 
 // drillDown narrows the whole view to the selected row.
@@ -494,11 +609,7 @@ func (m *model_) drillDown() {
 	m.recompute()
 }
 
-func (m *model_) ctx() *render.Ctx {
-	return &render.Ctx{Sum: m.sum, Detect: m.cfg.Detect, Files: m.res.Files, Stats: m.res.Stats,
-		Cached: m.res.Cached, Parsed: m.res.Parsed, Duplicate: m.res.Duplicate, Errors: len(m.res.Errors),
-		Cancelled: m.cancelled, Prices: m.cfg.Prices, RangeName: m.rangeNm, Filters: m.filterText()}
-}
+func (m *model_) ctx() *render.Ctx { return m.cx }
 
 func (m *model_) filterChips() []string {
 	var p []string
@@ -576,9 +687,12 @@ func (m *model_) View() string {
 		return m.loadingView()
 	}
 	W := m.width
-	lines := []string{m.headerLine(), m.tabBar(), t.FG(render.CMuted-4, strings.Repeat("─", W))}
+	tabRows, _ := m.tabLayout()
+	lines := []string{m.headerLine(), tabRows[0], tabRows[1]}
 	var body []string
 	switch {
+	case m.picker:
+		body = m.pickerView()
 	case m.help:
 		body = m.helpView()
 	case m.isTable():
@@ -598,132 +712,178 @@ func (m *model_) View() string {
 	return strings.Join(lines, "\n")
 }
 
-func (m *model_) rangeLabels() []string {
-	out := make([]string, len(ranges))
-	for i, d := range ranges {
-		out[i] = "all"
-		if d > 0 {
-			out[i] = fmt.Sprintf("%dd", d)
-		}
-	}
-	return out
-}
-
 const brand = "gauge·grain"
 
-func (m *model_) rangeSpans() [][2]int {
-	x := len(brand) + 2 + 2
-	var sp [][2]int
-	for _, l := range m.rangeLabels() {
-		sp = append(sp, [2]int{x, x + len(l) + 2})
-		x += len(l) + 3
+// pickerChip marks the "pick a period" button in headerLayout spans.
+const pickerChip = -2
+
+type chipSpan struct {
+	x0, x1 int
+	preset int
+}
+
+// headerLayout builds the top row and where each clickable chip sits.
+// It is pure so the renderer and the mouse handler share it.
+func (m *model_) headerLayout() (string, []chipSpan) {
+	t := m.cfg.Theme
+	var sb strings.Builder
+	x := 0
+	put := func(s string) { sb.WriteString(s); x += render.Width(s) }
+	var spans []chipSpan
+	chip := func(label string, active bool, preset int) {
+		start := x
+		if active {
+			put(t.Chip(label, render.CSelBG, true))
+		} else {
+			put(t.Dim(" " + label + " "))
+		}
+		spans = append(spans, chipSpan{start, x, preset})
 	}
-	return sp
+	put(" " + t.FG(render.CAccent, t.Bold(brand)) + "  " + t.Dim("Period "))
+	dayDrill := false
+	for _, d := range m.drill {
+		dayDrill = dayDrill || strings.HasPrefix(d, "day:")
+	}
+	chips := chipPresets()
+	onChip := false
+	for i, pi := range chips {
+		active := !dayDrill && m.per.preset == pi
+		onChip = onChip || active
+		label := presets[pi].chip
+		if active && m.per.shift > 0 {
+			label += fmt.Sprintf(" ◂%d", m.per.shift)
+		}
+		chip(label, active, pi)
+		if i < len(chips)-1 {
+			put(t.Dim("│"))
+		}
+	}
+	put(t.Dim("│"))
+	switch {
+	case dayDrill:
+		chip(m.rangeNm, true, pickerChip)
+	case !onChip:
+		chip(m.per.name(), true, pickerChip) // calendar or custom period
+	default:
+		chip("Pick…", false, pickerChip)
+	}
+	if !dayDrill {
+		if d := spanText(m.filter.From, m.filter.To, m.cfg.Loc); d != "" {
+			put("  " + t.Dim(d))
+		} else if m.idx != nil {
+			if a, b := m.idx.Span(); !a.IsZero() {
+				put("  " + t.Dim(spanText(a, b.AddDate(0, 0, 1), m.cfg.Loc)))
+			}
+		}
+	}
+	left := sb.String()
+	var chipsR []string
+	for _, c := range m.filterChips() {
+		chipsR = append(chipsR, t.Chip(c, 130, false))
+	}
+	right := strings.Join(chipsR, " ")
+	gap := m.width - render.Width(left) - render.Width(right) - 1
+	if gap < 1 {
+		return left, spans
+	}
+	return left + strings.Repeat(" ", gap) + right, spans
 }
 
 func (m *model_) headerLine() string {
-	t := m.cfg.Theme
-	left := t.Chip(brand, render.CSelBG, true) + "  "
-	custom := m.rangeIdxIsCustom()
-	for i, l := range m.rangeLabels() {
-		if i == m.rangeIdx && !custom {
-			left += t.Chip(l, render.CAccent-20, true) + " "
-		} else {
-			left += t.Dim(" "+l+" ") + " "
-		}
-	}
-	if custom {
-		left += t.Warn(m.rangeNm)
-	}
-	var chips []string
-	for _, c := range m.filterChips() {
-		chips = append(chips, t.Chip(c, 130, false))
-	}
-	right := strings.Join(chips, " ")
-	gap := m.width - render.Width(left) - render.Width(right)
-	if gap < 1 {
-		return left
-	}
-	return left + strings.Repeat(" ", gap) + right
+	s, _ := m.headerLayout()
+	return s
 }
-
-func (m *model_) rangeIdxIsCustom() bool {
-	for _, d := range m.drill {
-		if strings.HasPrefix(d, "day:") {
-			return true
-		}
-	}
-	return m.cfg.RangeName == "custom range" && !m.rangeTouched()
-}
-
-func (m *model_) rangeTouched() bool { return m.rangeNm != m.cfg.RangeName }
 
 func (m *model_) tabLabels() []string {
 	names := tabNames
 	if m.width < 90 {
 		names = tabShort
 	}
-	warn, _ := render.NoteCounts(m.ctx())
 	out := make([]string, numTabs)
 	for i := range out {
 		out[i] = fmt.Sprintf("%d %s", i+1, names[i])
-		if i == tabNotes && warn > 0 {
-			out[i] += fmt.Sprintf(" ⚠%d", warn)
+		if i == tabNotes && m.warn > 0 {
+			out[i] += fmt.Sprintf(" ⚠%d", m.warn)
 			if m.cfg.Theme.ASCII {
-				out[i] = fmt.Sprintf("%d %s !%d", i+1, names[i], warn)
+				out[i] = fmt.Sprintf("%d %s !%d", i+1, names[i], m.warn)
 			}
 		}
 	}
 	return out
 }
 
-func (m *model_) tabSpans() [][2]int {
-	x := 1
-	var sp [][2]int
-	for _, l := range m.tabLabels() {
-		w := render.Width(l) + 2
-		sp = append(sp, [2]int{x, x + w})
-		x += w + 1
-	}
-	return sp
-}
-
-func (m *model_) tabBar() string {
+// tabLayout renders the tab row and the rule under it, whose segment under
+// the active tab is highlighted, and returns each tab's clickable span.
+func (m *model_) tabLayout() ([]string, [][2]int) {
 	t := m.cfg.Theme
 	labels := m.tabLabels()
 	total := 1
 	for _, l := range labels {
-		total += render.Width(l) + 3
+		total += render.Width(l) + 4
+	}
+	rule, heavy := "─", "━"
+	if t.ASCII {
+		rule, heavy = "-", "="
 	}
 	if total > m.width { // very narrow: only the active tab
-		return t.Chip(fmt.Sprintf("‹ %d/%d %s ›", m.tab+1, numTabs, tabNames[m.tab]), render.CSelBG, true)
+		l := fmt.Sprintf("‹ %d/%d %s ›", m.tab+1, numTabs, tabNames[m.tab])
+		return []string{" " + t.Bold(l), t.FG(render.CMuted-4, strings.Repeat(rule, m.width))}, make([][2]int, numTabs)
 	}
-	var sb strings.Builder
-	sb.WriteString(" ")
+	var row strings.Builder
+	spans := make([][2]int, numTabs)
+	x := 1
+	row.WriteString(" ")
 	for i, l := range labels {
+		w := render.Width(l) + 2
+		spans[i] = [2]int{x, x + w}
+		txt := " " + l + " "
 		switch {
 		case i == m.tab:
-			sb.WriteString(t.Chip(l, render.CSelBG, true))
-		case i == tabNotes && (strings.Contains(l, "⚠") || strings.Contains(l, "!")):
-			sb.WriteString(" " + t.Warn(l) + " ")
+			row.WriteString(t.FG(255, t.Bold(txt)))
+		case i == tabNotes && m.warn > 0:
+			row.WriteString(t.Warn(txt))
 		default:
-			sb.WriteString(t.Dim(" " + l + " "))
+			row.WriteString(t.Dim(txt))
 		}
-		sb.WriteString(" ")
+		row.WriteString("  ")
+		x += w + 2
 	}
-	return sb.String()
+	var ru strings.Builder
+	for c := 0; c < m.width; c++ {
+		if c >= spans[m.tab][0] && c < spans[m.tab][1] {
+			ru.WriteString(t.FG(render.CAccent, heavy))
+		} else {
+			ru.WriteString(t.FG(render.CMuted-4, rule))
+		}
+	}
+	return []string{row.String(), ru.String()}, spans
+}
+
+func (m *model_) tabBar() string {
+	r, _ := m.tabLayout()
+	return r[0]
 }
 
 // ---- overview & notes (scrolling text views) -------------------------------
 
+// scrollLines renders the Overview or Notes. The result is cached per
+// (data version, width): scrolling and mouse events re-use it, so only a
+// real change in filters, period or size pays for a rebuild.
 func (m *model_) scrollLines() []string {
 	if m.sum == nil {
 		return nil
 	}
-	if m.tab == tabNotes {
-		return m.notesLines()
+	c := &m.cache[m.tab]
+	if c.lines != nil && c.ver == m.ver && c.w == m.width {
+		return c.lines
 	}
-	return m.overviewLines()
+	if m.tab == tabNotes {
+		c.lines = m.notesLines()
+	} else {
+		c.lines = m.overviewLines()
+	}
+	c.ver, c.w = m.ver, m.width
+	return c.lines
 }
 
 func (m *model_) scrollView() []string {
@@ -759,10 +919,10 @@ func (m *model_) overviewLines() []string {
 	costDelta := t.Dim("API-equivalent · not your bill")
 	if s.Prev != nil {
 		if ch, ok := agg.Change(float64(tot.Tokens()), float64(s.Prev.Tokens())); ok {
-			tokDelta = t.Arrow(ch) + t.Dim(" vs previous "+render.Tokens(s.Prev.Tokens()))
+			tokDelta = t.Arrow(ch) + t.Dim(" vs "+m.prevSpan())
 		}
 		if ch, ok := agg.Change(tot.Cost, s.Prev.Cost); ok && tot.Complete() {
-			costDelta = t.Arrow(ch) + t.Dim(" vs previous · estimate")
+			costDelta = t.Arrow(ch) + t.Dim(" vs "+m.prevSpan()+" · estimate")
 		}
 	}
 	costVal := t.FG(render.CGood, t.Bold(render.Cost(tot.Cost)))
@@ -835,6 +995,19 @@ func (m *model_) overviewLines() []string {
 	}
 	out = append(out, t.Panel("Projects", miniRows(t, s.ByProject, tot.Tokens(), W-4, 5), W, render.CAccent)...)
 	return out
+}
+
+// prevSpan names the comparison window, e.g. "31 Aug – 29 Sep 2026".
+func (m *model_) prevSpan() string {
+	f, to := m.filter.From, m.filter.To
+	if f.IsZero() || to.IsZero() {
+		return "previous period"
+	}
+	pf, pt := m.filter.PrevFrom, m.filter.PrevTo
+	if pf.IsZero() {
+		pf, pt = f.Add(-to.Sub(f)), f
+	}
+	return spanShort(pf, pt, m.cfg.Loc)
 }
 
 func (m *model_) sourcesLine() string {
@@ -1186,7 +1359,7 @@ func (m *model_) footer() []string {
 		return []string{t.Dim(m.status()), t.Pad(prompt+t.Dim("   Enter apply · Esc cancel · matches model, project or session"), W)}
 	}
 	type hint struct{ key, what string }
-	all := []hint{{"←→", "view"}, {"↑↓", "move"}, {"⏎", "drill"}, {"esc", "back"}, {"d", "range"}, {"p", "provider"}, {"/", "search"}, {"s", "sort"}, {"n", "notes"}, {"?", "help"}, {"q", "quit"}}
+	all := []hint{{"←→", "view"}, {"↑↓", "move"}, {"⏎", "drill"}, {"esc", "back"}, {"t", "period"}, {"[ ]", "shift"}, {"p", "provider"}, {"/", "search"}, {"s", "sort"}, {"n", "notes"}, {"?", "help"}, {"q", "quit"}}
 	if !m.isTable() {
 		all[1].what, all[2] = "scroll", hint{"r", "rescan"}
 	}
@@ -1231,7 +1404,9 @@ func (m *model_) helpView() []string {
 		{"↑ ↓ · j k · PgUp PgDn · g G", "move or scroll"},
 		{"Enter  (or click a selected row)", "drill into the selected day / provider / model / project"},
 		{"Esc · Backspace", "undo the last drill-down → clear search → back to Overview"},
-		{"d  (or click 7d 30d 90d all)", "change the time range"},
+		{"t  (or click Pick…)", "choose a period: presets, or type 2026-10 · 14d · 2026-10-01..2026-10-15"},
+		{"d · D  (or click a chip)", "next / previous quick period: Today, 7d, 30d, 90d, All"},
+		{"[ · ]  ·  .", "move the period earlier / later by its own length · back to now"},
 		{"p", "cycle the provider filter"},
 		{"/", "search model, project or session text"},
 		{"s", "sort by tokens or by estimated cost"},
