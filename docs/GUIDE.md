@@ -212,6 +212,12 @@ paths in use.
 
 <p align="center"><img src="img/narrow.png" alt="The dashboard in a 62-column terminal" width="420"></p>
 
+After an upgrade that changes how a tool's logs are read, the dashboard does not wait for every log to be read again.
+It shows the usage from the cache of the previous version at once (for logs that have not changed, or whose beginning
+has not), says so in the status line (`N files updating from the previous version`), and reads those logs again in the
+background. Numbers can move a little when the update finishes. The command-line report reads everything before it
+prints, as always.
+
 ## Cancelling and the cache
 
 The first scan of a large history can take a while: the dashboard shows a progress panel, the report shows a meter on
