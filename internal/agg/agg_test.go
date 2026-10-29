@@ -263,3 +263,25 @@ func TestPreviousWindowIsWholeDaysAcrossDST(t *testing.T) {
 		t.Errorf("start %v", pf)
 	}
 }
+
+// Tool uses are counted per view and ordered by use; sources without tool
+// calls contribute nothing.
+func TestToolUsesAreCountedPerViewAndOrdered(t *testing.T) {
+	at := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	evs := []model.Event{
+		{Provider: "claude", Model: "m", Project: "/a", Session: "s1", Time: at, Input: 1, Tools: "Bash,Read,Bash"},
+		{Provider: "claude", Model: "m", Project: "/b", Session: "s2", Time: at, Input: 1, Tools: "Read"},
+		{Provider: "codex", Model: "m", Project: "/a", Session: "s3", Time: at, Input: 1},
+	}
+	pt, _ := pricing.Load("")
+	idx := NewIndex(evs, pt, time.UTC)
+	s := idx.Summarize(Filter{})
+	want := []ToolStat{{"Bash", 2}, {"Read", 2}}
+	if len(s.Tools) != 2 || s.Tools[0] != want[0] || s.Tools[1] != want[1] {
+		t.Errorf("tools: %+v", s.Tools)
+	}
+	s = idx.Summarize(Filter{Projects: []string{"/b"}})
+	if len(s.Tools) != 1 || s.Tools[0].Name != "Read" || s.Tools[0].Uses != 1 {
+		t.Errorf("the project filter must apply to tools too: %+v", s.Tools)
+	}
+}

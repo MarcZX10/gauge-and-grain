@@ -396,7 +396,7 @@ func NoteItems(c *Ctx) []Note {
 		add(true, "%d file(s) could not be read; their usage is missing.", c.Errors)
 	}
 	if c.Cancelled {
-		add(true, "The scan was cancelled: totals are partial. Rescan to resume from the cache.")
+		add(true, "The scan was cancelled: totals are partial. Run the same command again to resume from the cache.")
 	}
 	for _, cv := range c.Sum.Coverage() {
 		var miss []string

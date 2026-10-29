@@ -185,9 +185,12 @@ func (g *Group) addCell(c *cell) {
 
 // Summary is everything a view needs.
 type Summary struct {
-	Filter     Filter
-	Total      *Group
-	Prev       *Group // same-length period immediately before, if the range is bounded
+	Filter Filter
+	Total  *Group
+	Prev   *Group // same-length period immediately before, if the range is bounded
+	// Tools are the tool and skill uses in the view's period, most used first.
+	// Only sources that record tool calls (Claude Code) contribute.
+	Tools      []ToolStat
 	ByDay      []*Group
 	ByProvider []*Group
 	ByModel    []*Group
@@ -211,6 +214,13 @@ type cell struct {
 	hasCount                          [3]int
 	events                            int
 	first, last                       time.Time
+	tools                             map[string]int64 // tool name -> uses, nil when none
+}
+
+// ToolStat is how often one tool (or skill) was used.
+type ToolStat struct {
+	Name string
+	Uses int64
 }
 
 func (c *cell) tokens() int64 { return c.input + c.cacheRead + c.cacheWrite + c.output }
@@ -271,6 +281,14 @@ func NewIndex(events []model.Event, pt *pricing.Table, loc *time.Location) *Inde
 			c.cost += p.Cost(e)
 		}
 		c.events++
+		if e.Tools != "" {
+			if c.tools == nil {
+				c.tools = map[string]int64{}
+			}
+			for _, n := range model.ToolNames(e.Tools) {
+				c.tools[n]++
+			}
+		}
 		c.input += e.Input
 		c.cacheRead += e.CacheRead
 		c.cacheWrite += e.CacheWrite
@@ -400,6 +418,7 @@ func (x *Index) Summarize(f Filter) *Summary {
 	s := &Summary{Filter: f, Total: newGroup("total", "Total"), Loc: loc}
 	day := map[string]*Group{}
 	prov, mod, proj, sess := map[string]*Group{}, map[string]*Group{}, map[string]*Group{}, map[string]*Group{}
+	tools := map[string]int64{}
 	get := func(m map[string]*Group, k, l string) *Group {
 		g := m[k]
 		if g == nil {
@@ -435,7 +454,19 @@ func (x *Index) Summarize(f Filter) *Summary {
 		get(mod, c.provider+"/"+c.model, c.model).addCell(c)
 		get(proj, c.project, ProjectLabel(c.project)).addCell(c)
 		get(sess, c.sessKey, ShortID(strings.TrimPrefix(c.sessKey, c.provider+"/"))).addCell(c)
+		for name, n := range c.tools {
+			tools[name] += n
+		}
 	}
+	for name, n := range tools {
+		s.Tools = append(s.Tools, ToolStat{Name: name, Uses: n})
+	}
+	sort.Slice(s.Tools, func(i, j int) bool {
+		if s.Tools[i].Uses != s.Tools[j].Uses {
+			return s.Tools[i].Uses > s.Tools[j].Uses
+		}
+		return s.Tools[i].Name < s.Tools[j].Name
+	})
 	s.ByDay = fillDays(day, f, loc)
 	s.ByProvider, s.ByModel, s.ByProject, s.BySession = sorted(prov), sorted(mod), sorted(proj), sorted(sess)
 	disambiguate(s.ByModel)

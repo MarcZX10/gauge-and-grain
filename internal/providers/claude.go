@@ -26,7 +26,7 @@ type Claude struct{}
 
 func (Claude) ID() string         { return "claude" }
 func (Claude) Name() string       { return "Claude Code" }
-func (Claude) ParserVersion() int { return 1 }
+func (Claude) ParserVersion() int { return 3 } // 3: tool uses, one per id
 func (Claude) Fields() Fields {
 	return Fields{CacheRead: true, CacheWrite: true, Reasoning: true,
 		Note: "reasoning shown only when the log carries thinking_tokens"}
@@ -73,9 +73,10 @@ type claudeLine struct {
 	RequestID string `json:"requestId"`
 	UUID      string `json:"uuid"`
 	Message   *struct {
-		ID    string `json:"id"`
-		Model string `json:"model"`
-		Usage *struct {
+		ID      string        `json:"id"`
+		Model   string        `json:"model"`
+		Content []claudeBlock `json:"content"`
+		Usage   *struct {
 			Input      *int64 `json:"input_tokens"`
 			Output     *int64 `json:"output_tokens"`
 			CacheRead  *int64 `json:"cache_read_input_tokens"`
@@ -88,6 +89,36 @@ type claudeLine struct {
 			} `json:"cache_creation"`
 		} `json:"usage"`
 	} `json:"message"`
+}
+
+// claudeBlock is one content block of a message; only tool uses are read.
+type claudeBlock struct {
+	Type  string `json:"type"`
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Input *struct {
+		Skill string `json:"skill"`
+	} `json:"input"`
+}
+
+// claudeTools names the tools one message uses: each tool_use block, with a
+// skill shown as skill:<name> (the Skill tool takes the skill's name).
+func claudeTools(content []claudeBlock) string {
+	var uses []string
+	for _, b := range content {
+		if b.Type != "tool_use" {
+			continue
+		}
+		n := b.Name
+		if n == "" {
+			n = "(unnamed)"
+		}
+		if n == "Skill" && b.Input != nil && b.Input.Skill != "" {
+			n = "skill:" + b.Input.Skill
+		}
+		uses = append(uses, model.ToolEntry(b.ID, n))
+	}
+	return strings.Join(uses, ",")
 }
 
 var (
@@ -157,6 +188,7 @@ func (p *claudeParser) Line(line []byte) {
 		Input:     clamp(val(u.Input), st),
 		Output:    clamp(val(u.Output), st),
 		CacheRead: clamp(val(u.CacheRead), st),
+		Tools:     claudeTools(m.Content),
 	}
 	e.CacheWrite = clamp(val(u.CacheWrite), st)
 	if u.CacheRead != nil {

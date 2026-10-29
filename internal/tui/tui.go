@@ -4,7 +4,10 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -33,6 +36,21 @@ type Config struct {
 	All       bool
 	Bounded   bool // range came from --days/--all, so presets may replace it
 	Compact   bool // start with the tiny summary
+	// Explicit is true when the period was set on the command line
+	// (--days, --from, --to, --all). Saved preferences never override it.
+	Explicit bool
+	// Refresh is how often the files are rescanned in the background (0: never).
+	Refresh time.Duration
+	// Prefs is the file that remembers sort, view and period between runs ("" disables).
+	Prefs string
+}
+
+// prefs is what the dashboard remembers between runs.
+type prefs struct {
+	Sort    string `json:"sort,omitempty"`    // "tokens" or "cost"
+	Tab     string `json:"tab,omitempty"`     // view name
+	Period  string `json:"period,omitempty"`  // preset id, e.g. "30d"
+	Compact *bool  `json:"compact,omitempty"` // tiny Overview
 }
 
 const (
@@ -48,13 +66,14 @@ const (
 	tabModels
 	tabProjects
 	tabSessions
+	tabTools
 	tabNotes
 	numTabs
 )
 
-var tabNames = [numTabs]string{"Overview", "Daily", "Providers", "Models", "Projects", "Sessions", "Notes"}
-var tabShort = [numTabs]string{"Ovw", "Day", "Prv", "Mdl", "Prj", "Ses", "Nts"}
-var tabLabel = [numTabs]string{"", "Day", "Provider", "Model", "Project", "Session", ""}
+var tabNames = [numTabs]string{"Overview", "Daily", "Providers", "Models", "Projects", "Sessions", "Tools", "Notes"}
+var tabShort = [numTabs]string{"Ovw", "Day", "Prv", "Mdl", "Prj", "Ses", "Tls", "Nts"}
+var tabLabel = [numTabs]string{"", "Day", "Provider", "Model", "Project", "Session", "", ""}
 
 type sortBy int
 
@@ -105,11 +124,19 @@ type model_ struct {
 	input   string
 	help    bool
 	rangeNm string
+	// hoverCur is the row or day under the pointer (-1: none). It highlights
+	// only; the cursor, and so Enter, follow clicks and the keyboard.
+	hoverCur int
+	note     string // one-line message for the last action, shown in the status line
+	// refreshing marks a background rescan: the view stays put meanwhile.
+	refreshing bool
+	updated    time.Time
 }
 
 type progressMsg scan.Progress
 type doneMsg *scan.Result
 type tickMsg time.Time
+type refreshMsg struct{}
 type startedMsg struct {
 	ch     chan tea.Msg
 	cancel context.CancelFunc
@@ -117,18 +144,90 @@ type startedMsg struct {
 
 // Run starts the TUI and blocks until the user quits.
 func Run(cfg Config) error {
-	m := &model_{cfg: cfg, filter: cfg.Filter, rangeNm: cfg.RangeName, loading: true, started: time.Now()}
+	m := &model_{cfg: cfg, filter: cfg.Filter, rangeNm: cfg.RangeName, loading: true, started: time.Now(), hoverCur: -1}
 	m.per = initialPeriod(cfg)
 	m.compact = cfg.Compact
+	m.loadPrefs()
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion())
 	_, err := p.Run()
 	if m.cancel != nil {
 		m.cancel()
 	}
+	m.savePrefs()
 	return err
 }
 
-func (m *model_) Init() tea.Cmd { return tea.Batch(m.startScan(), tick()) }
+// loadPrefs applies the saved sort, view, period and compact mode. A period
+// given on the command line always wins.
+func (m *model_) loadPrefs() {
+	if m.cfg.Prefs == "" {
+		return
+	}
+	b, err := os.ReadFile(m.cfg.Prefs)
+	if err != nil {
+		return
+	}
+	var p prefs
+	if json.Unmarshal(b, &p) != nil {
+		return
+	}
+	switch p.Sort {
+	case "cost":
+		m.sort = byCost
+	case "tokens":
+		m.sort = byTokens
+	}
+	for i, n := range tabNames {
+		if n != "" && strings.EqualFold(n, p.Tab) {
+			m.tab = i
+		}
+	}
+	if !m.cfg.Explicit {
+		if i := presetIndex(p.Period); i > 0 || p.Period == "today" {
+			m.per = periodState{preset: i}
+		}
+	}
+	if p.Compact != nil && !m.cfg.Compact {
+		m.compact = *p.Compact
+	}
+}
+
+// savePrefs writes the preferences atomically. Failure is silent: the
+// preferences are a convenience, never a reason for the dashboard to fail.
+func (m *model_) savePrefs() {
+	if m.cfg.Prefs == "" {
+		return
+	}
+	p := prefs{Sort: "tokens", Tab: tabNames[m.tab], Compact: &m.compact}
+	if m.sort == byCost {
+		p.Sort = "cost"
+	}
+	if m.per.preset != customPreset {
+		p.Period = presets[m.per.preset].id
+	}
+	b, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return
+	}
+	if os.MkdirAll(filepath.Dir(m.cfg.Prefs), 0o700) != nil {
+		return
+	}
+	tmp := m.cfg.Prefs + ".tmp"
+	if os.WriteFile(tmp, append(b, '\n'), 0o600) == nil {
+		os.Rename(tmp, m.cfg.Prefs)
+	}
+}
+
+func (m *model_) Init() tea.Cmd { return tea.Batch(m.startScan(), tick(), m.refreshLater()) }
+
+// refreshLater schedules the next background rescan. Unchanged files come
+// from the cache, so a rescan is cheap; the view keeps its place meanwhile.
+func (m *model_) refreshLater() tea.Cmd {
+	if m.cfg.Refresh <= 0 {
+		return nil
+	}
+	return tea.Tick(m.cfg.Refresh, func(time.Time) tea.Msg { return refreshMsg{} })
+}
 
 func tick() tea.Cmd {
 	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg { return tickMsg(t) })
@@ -200,11 +299,19 @@ func (m *model_) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.frame++
 			return m, tick()
 		}
+	case refreshMsg:
+		if m.loading || m.refreshing {
+			return m, m.refreshLater()
+		}
+		m.refreshing = true
+		return m, tea.Batch(m.startScan(), m.refreshLater())
 	case doneMsg:
 		m.res = (*scan.Result)(msg)
 		m.events = m.res.Events
 		m.cancelled = m.res.Cancelled
 		m.loading = false
+		m.refreshing = false
+		m.updated = time.Now()
 		m.scanTook = time.Since(m.started)
 		m.idx = agg.NewIndex(m.events, m.cfg.Prices, m.cfg.Loc)
 		m.applyPeriod()
@@ -220,14 +327,15 @@ func (m *model_) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *model_) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	s := k.String()
-	if s == "ctrl+c" {
+	if s == "ctrl+c" || (s == "q" && m.loading) {
 		if m.cancel != nil {
 			m.cancel()
 		}
 		return m, tea.Quit
 	}
+	m.note, m.hoverCur = "", -1
 	if m.loading {
-		if s == "esc" || s == "q" {
+		if s == "esc" {
 			// Cancel cleanly: the scan stops, finished files stay cached
 			// and whatever was read so far is shown as partial.
 			if m.cancel != nil {
@@ -259,6 +367,9 @@ func (m *model_) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.help {
+		if s == "q" {
+			return m, tea.Quit
+		}
 		m.help = false
 		return m, nil
 	}
@@ -271,10 +382,12 @@ func (m *model_) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.tab = (m.tab + 1) % numTabs
 	case "shift+tab", "left", "h":
 		m.tab = (m.tab + numTabs - 1) % numTabs
-	case "1", "2", "3", "4", "5", "6", "7":
+	case "1", "2", "3", "4", "5", "6", "7", "8":
 		m.tab = int(s[0] - '1')
 	case "o":
 		m.tab = tabOverview
+	case "e":
+		m.exportView()
 	case "n":
 		m.tab = tabNotes
 	case "m":
@@ -311,20 +424,26 @@ func (m *model_) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case ".":
 		m.setPeriod(periodState{preset: m.per.preset, from: m.per.from, to: m.per.to, label: m.per.label})
 	case "p":
+		m.filter.Providers = nil // the command-line provider filter gives way to the cycle
 		m.provIdx = (m.provIdx + 1) % (len(m.provList()) + 1)
 		m.recompute()
 	case "s":
 		m.sort = 1 - m.sort
 		m.recompute()
+		if m.tab == tabDaily || m.tab == tabOverview {
+			m.note = "sorting applies to Providers, Models, Projects and Sessions"
+		}
 	case "/":
 		m.search, m.input = true, m.filter.Text
 	case "c":
 		m.filter.Text, m.filter.Models, m.filter.Projects, m.drill = "", nil, nil, nil
 		m.filter.ModelsExact, m.filter.ProjectsExact = nil, nil
+		m.filter.Providers = nil
 		m.provIdx = 0
 		m.applyPeriod()
 	case "r", "R":
 		m.loading, m.cancelled, m.prog, m.started = true, false, scan.Progress{}, time.Now()
+		m.refreshing = false
 		return m, tea.Batch(m.startScan(), tick())
 	}
 	return m, nil
@@ -334,6 +453,15 @@ func (m *model_) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *model_) mouse(e tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.loading || m.help || m.search || m.sum == nil {
+		return m, nil
+	}
+	if m.picker { // the picker is modal: clicks choose from it or do nothing
+		if e.Button == tea.MouseButtonLeft && e.Action == tea.MouseActionPress {
+			if i := e.Y - (bodyTop + 2); i >= 0 && i < len(pickerEntries()) {
+				m.setPeriod(pickerEntries()[i].p)
+				m.picker = false
+			}
+		}
 		return m, nil
 	}
 	switch {
@@ -401,7 +529,8 @@ func (m *model_) chartDayAt(x, y int) int {
 	}
 	g := m.geometry()
 	h := g.chartH - 3
-	if g.chartH == 0 || y < bodyTop+1 || y >= bodyTop+1+h {
+	top := bodyTop + g.heatH // the chart panel starts under the calendar
+	if g.chartH == 0 || y < top+1 || y >= top+1+h {
 		return -1
 	}
 	w, n := m.width-4, len(m.sum.ByDay)
@@ -436,17 +565,18 @@ func (m *model_) selectRow(c int) {
 // hover selects what the pointer is over: a bar of the Daily chart, or a
 // row of the Daily table.
 func (m *model_) hover(x, y int) {
+	m.hoverCur = -1
 	if m.tab != tabDaily {
 		return
 	}
 	if i := m.chartDayAt(x, y); i >= 0 {
-		m.selectRow(len(m.sum.ByDay) - 1 - i)
+		m.hoverCur = len(m.sum.ByDay) - 1 - i
 		return
 	}
 	g := m.geometry()
 	if x < g.tableW {
 		if row := y - (g.tableTop + 2); row >= 0 && row < g.vis && m.offset[m.tab]+row < len(m.groups()) {
-			m.selectRow(m.offset[m.tab] + row)
+			m.hoverCur = m.offset[m.tab] + row
 		}
 	}
 }
@@ -699,7 +829,8 @@ func (m *model_) drillDown() {
 		m.filter.ProjectsExact = []string{g.Key}
 		m.drill = append(m.drill, "project:"+g.Label)
 	default:
-		return // a session is already the finest level
+		m.note = "sessions are the finest level: nothing to drill into"
+		return
 	}
 	m.tab = tabOverview
 	m.recompute()
@@ -711,6 +842,14 @@ func (m *model_) filterChips() []string {
 	var p []string
 	if m.provIdx > 0 {
 		p = append(p, "provider: "+m.provList()[m.provIdx-1])
+	} else if len(m.filter.Providers) > 0 { // from the command line: shown, so never a hidden filter
+		p = append(p, "provider: "+strings.Join(m.filter.Providers, ","))
+	}
+	for _, v := range m.filter.Models {
+		p = append(p, "model: "+v)
+	}
+	for _, v := range m.filter.Projects {
+		p = append(p, "project: "+v)
 	}
 	for _, d := range m.drill {
 		if !strings.HasPrefix(d, "provider:") && !strings.HasPrefix(d, "day:") {
@@ -729,6 +868,7 @@ func (m *model_) filterText() string { return strings.Join(m.filterChips(), " �
 // ---- geometry ------------------------------------------------------------
 
 type geom struct {
+	heatH    int // rows of the Daily activity calendar (0 = none)
 	chartH   int // rows of the Daily chart panel (0 = none)
 	tableTop int // screen row of the table panel's top border
 	tableH   int // rows of the table panel
@@ -745,6 +885,10 @@ func (m *model_) geometry() geom {
 	g.tableW = W
 	remaining := H
 	if m.tab == tabDaily && H >= 16 {
+		if H >= 30 { // room for the calendar as well as the chart and table
+			g.heatH = 9
+			remaining -= g.heatH
+		}
 		g.chartH = 9
 		remaining -= g.chartH
 	}
@@ -764,7 +908,7 @@ func (m *model_) geometry() geom {
 		}
 		g.tableH = min(remaining, max(len(m.groups())+3, floor))
 	}
-	g.tableTop = bodyTop + g.chartH
+	g.tableTop = bodyTop + g.heatH + g.chartH
 	g.vis = max(1, g.tableH-3) // border, header, border
 	return g
 }
@@ -803,7 +947,7 @@ func (m *model_) View() string {
 	lines = append(lines, body[:h]...)
 	lines = append(lines, m.footer()...)
 	for i := range lines {
-		lines[i] = t.Trunc(lines[i], W)
+		lines[i] = t.Trunc(t.Fold(lines[i]), W)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -879,6 +1023,10 @@ func (m *model_) headerLayout() (string, []chipSpan) {
 	}
 	right := strings.Join(chipsR, " ")
 	gap := m.width - render.Width(left) - render.Width(right) - 1
+	if gap < 1 && len(chipsR) > 0 { // too narrow for the chips: a count, and the status line names them
+		right = t.Chip(fmt.Sprintf("%d filters", len(chipsR)), 130, false)
+		gap = m.width - render.Width(left) - render.Width(right) - 1
+	}
 	if gap < 1 {
 		return left, spans
 	}
@@ -923,6 +1071,9 @@ func (m *model_) tabLayout() ([]string, [][2]int) {
 	}
 	if total > m.width { // very narrow: only the active tab
 		l := fmt.Sprintf("‹ %d/%d %s ›", m.tab+1, numTabs, tabNames[m.tab])
+		if m.warn > 0 { // the Notes badge must still show when the tabs do not fit
+			l += fmt.Sprintf("  ⚠%d", m.warn)
+		}
 		return []string{" " + t.Bold(l), t.FG(render.CMuted-4, strings.Repeat(rule, m.width))}, make([][2]int, numTabs)
 	}
 	var row strings.Builder
@@ -973,9 +1124,12 @@ func (m *model_) scrollLines() []string {
 	if c.lines != nil && c.ver == m.ver && c.w == m.width {
 		return c.lines
 	}
-	if m.tab == tabNotes {
+	switch m.tab {
+	case tabNotes:
 		c.lines = m.notesLines()
-	} else {
+	case tabTools:
+		c.lines = m.toolsLines()
+	default:
 		c.lines = m.overviewLines()
 	}
 	c.ver, c.w = m.ver, m.width
@@ -1382,6 +1536,10 @@ func (m *model_) tableView() []string {
 	gs := m.groups()
 	var out []string
 
+	if g.heatH > 0 {
+		out = append(out, t.Panel(fmt.Sprintf("Activity · last %d weeks", heatWeeks(m.sum.ByDay, W-4)),
+			heatmapLines(t, m.sum.ByDay, W-4), W, render.CAccent)...)
+	}
 	if g.chartH > 0 {
 		vals := make([]float64, len(m.sum.ByDay))
 		for i, d := range m.sum.ByDay {
@@ -1389,7 +1547,11 @@ func (m *model_) tableView() []string {
 		}
 		sel := -1
 		if len(gs) > 0 {
-			sel = len(vals) - 1 - m.cursor[m.tab]
+			cur := m.cursor[m.tab]
+			if m.hoverCur >= 0 && m.hoverCur < len(gs) { // the pointer previews a day; the cursor stays
+				cur = m.hoverCur
+			}
+			sel = len(vals) - 1 - cur
 		}
 		title := "Daily tokens"
 		if sel >= 0 && sel < len(m.sum.ByDay) {
@@ -1413,11 +1575,8 @@ func (m *model_) tableView() []string {
 	m.offset[m.tab] = off
 	for i := off; i < min(len(rows), off+g.vis); i++ {
 		r := strings.TrimPrefix(rows[i], "  ")
-		if i == m.cursor[m.tab] {
-			r = t.Select(r, tw-4)
-			if !t.Color {
-				r = ">" + strings.TrimPrefix(render.Strip(r), " ")
-			}
+		if i == m.cursor[m.tab] { // a marker as well as the background, so it reads without colour
+			r = t.Select(t.FG(render.CAccent, "›")+" "+r, tw-4)
 		}
 		inner = append(inner, r)
 	}
@@ -1482,7 +1641,7 @@ func (m *model_) footer() []string {
 		return []string{t.Dim(m.status()), t.Pad(prompt+t.Dim("   Enter apply · Esc cancel · matches model, project or session"), W)}
 	}
 	type hint struct{ key, what string }
-	all := []hint{{"←→", "view"}, {"↑↓", "move"}, {"⏎", "drill"}, {"esc", "back"}, {"t", "period"}, {"[ ]", "shift"}, {"p", "provider"}, {"/", "search"}, {"s", "sort"}, {"m", "compact"}, {"n", "notes"}, {"?", "help"}, {"q", "quit"}}
+	all := []hint{{"←→", "view"}, {"↑↓", "move"}, {"⏎", "drill"}, {"esc", "back"}, {"t", "period"}, {"[ ]", "shift"}, {"p", "provider"}, {"c", "clear"}, {"/", "search"}, {"s", "sort"}, {"m", "compact"}, {"e", "export"}, {"n", "notes"}, {"?", "help"}, {"q", "quit"}}
 	if !m.isTable() {
 		all[1].what, all[2] = "scroll", hint{"r", "rescan"}
 	}
@@ -1512,6 +1671,17 @@ func (m *model_) status() string {
 	if m.sort == byCost {
 		s += " · sorted by cost"
 	}
+	if m.refreshing {
+		s += " · updating…"
+	} else if !m.updated.IsZero() {
+		s += " · updated " + m.updated.Format("15:04")
+	}
+	if m.note != "" {
+		s += " · " + m.note
+	}
+	if fs := m.filterChips(); m.width < 100 && len(fs) > 0 { // narrow: the header shows only a count
+		s += " · " + strings.Join(fs, " › ")
+	}
 	if m.cancelled {
 		s += " · " + "PARTIAL (scan cancelled)"
 		return t.Warn(s)
@@ -1523,28 +1693,25 @@ func (m *model_) status() string {
 func (m *model_) helpView() []string {
 	t, W := m.cfg.Theme, m.width
 	rows := [][2]string{
-		{"← → · Tab · 1-7", "switch view"},
-		{"↑ ↓ · j k · PgUp PgDn · g G", "move or scroll"},
-		{"Enter  (or click a selected row)", "drill into the selected day / provider / model / project"},
-		{"Esc · Backspace", "undo the last drill-down → clear search → back to Overview"},
-		{"t  (or click Pick…)", "choose a period: presets, or type 2026-10 · 14d · 2026-10-01..2026-10-15"},
-		{"d · D  (or click a chip)", "next / previous quick period: Today, 7d, 30d, 90d, All"},
-		{"[ · ]  ·  .", "move the period earlier / later by its own length · back to now"},
-		{"p", "cycle the provider filter"},
+		{"← → · Tab · 1-8 · o · n", "switch view (o Overview, n Notes)"},
+		{"↑ ↓ · j k · PgUp PgDn · g G", "move, or scroll the Overview and Notes"},
+		{"Enter · click a selected row", "drill into the day, provider, model or project"},
+		{"Esc · Backspace", "undo the last drill-down, then the search, then go to Overview"},
+		{"t · click Pick…", "choose a period: presets, or type 2026-10 · 14d · 2026-10-01..2026-10-15"},
+		{"d D · [ ] · .", "quick periods · move the period earlier or later · back to now"},
+		{"p · s · c", "cycle the provider · sort by tokens or cost · clear every filter"},
 		{"/", "search model, project or session text"},
-		{"s", "sort by tokens or by estimated cost"},
-		{"m", "compact: shrink the Overview to the headline numbers (start that way with --compact)"},
-		{"n", "notes: estimates, gaps, unpriced models, sources, prices"},
-		{"c", "clear every filter"},
-		{"r", "rescan files (unchanged files come from the cache)"},
-		{"mouse", "wheel scrolls; click tabs, periods, rows or Daily bars; pointing at a day selects it"},
-		{"q · Ctrl-C", "quit"},
+		{"m · e", "compact summary · export this view to a CSV file in this folder"},
+		{"r", "rescan now (unchanged files come from the cache)"},
+		{"mouse", "wheel scrolls; click tabs, periods, rows and bars; pointing previews a day"},
+		{"Shift + drag", "select and copy text (the terminal needs it while the mouse is used)"},
+		{"q · Ctrl-C", "quit (q also quits from this help)"},
 	}
 	var lines []string
 	for _, r := range rows {
-		lines = append(lines, t.Bold(t.Pad(r[0], 34))+t.Dim(r[1]))
+		lines = append(lines, t.Bold(t.Pad(r[0], 30))+t.Dim(r[1]))
 	}
-	lines = append(lines, "", t.Dim("Any key closes this help."))
+	lines = append(lines, "", t.Dim("Any other key closes this help."))
 	w := min(W, 100)
 	p := t.Panel("Keys", lines, w, render.CAccent)
 	pad := strings.Repeat(" ", (W-w)/2)
@@ -1576,7 +1743,7 @@ func (m *model_) loadingView() string {
 		t.Dim("Nothing leaves your machine. The first scan of a big history"),
 		t.Dim("takes a while; later runs only read what changed."),
 		"",
-		t.Bold("Esc") + t.Dim(" cancel cleanly (finished files stay cached) · ") + t.Bold("Ctrl-C") + t.Dim(" quit"),
+		t.Bold("Esc") + t.Dim(" cancel (finished files stay cached) · ") + t.Bold("q") + t.Dim(" quit"),
 	}
 	box := t.Panel("gauge-and-grain", lines, w, render.CAccent)
 	var out []string
@@ -1606,4 +1773,158 @@ func firstKey(m map[string]struct{}) string {
 		return k
 	}
 	return ""
+}
+
+// exportView writes the current view to a CSV file in the working directory,
+// one row per day, provider, model, project or session, as the view groups.
+func (m *model_) exportView() {
+	if m.sum == nil || m.res == nil {
+		return
+	}
+	by := "day"
+	switch m.tab {
+	case tabProviders:
+		by = "provider"
+	case tabModels:
+		by = "model"
+	case tabProjects:
+		by = "project"
+	case tabSessions:
+		by = "session"
+	}
+	name := fmt.Sprintf("gg-%s-%s.csv", by, time.Now().Format("20060102-150405"))
+	f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		m.note = "export failed: " + err.Error()
+		return
+	}
+	err = render.CSV(f, m.cx, by, m.events, &m.sum.Filter)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(name)
+		m.note = "export failed: " + err.Error()
+		return
+	}
+	m.note = "exported " + by + " view to ./" + name
+}
+
+// heatWeeks is how many week columns the activity calendar draws in width w.
+func heatWeeks(days []*agg.Group, w int) int {
+	return len(heatCols(days, w))
+}
+
+// heatCols returns the Monday of each week the calendar shows, oldest first:
+// the most recent weeks of the data that fit in w columns.
+func heatCols(days []*agg.Group, w int) []time.Time {
+	if len(days) == 0 {
+		return nil
+	}
+	first, err1 := time.Parse("2006-01-02", days[0].Key)
+	last, err2 := time.Parse("2006-01-02", days[len(days)-1].Key)
+	if err1 != nil || err2 != nil {
+		return nil
+	}
+	monday := func(d time.Time) time.Time { return d.AddDate(0, 0, -((int(d.Weekday()) + 6) % 7)) }
+	endMon, firstMon := monday(last), monday(first)
+	total := int(endMon.Sub(firstMon).Hours()/24)/7 + 1
+	n := min(total, max(1, (w-2)/2)) // a 2-column cell, and a 2-column weekday label
+	out := make([]time.Time, n)
+	for i := range out {
+		out[i] = endMon.AddDate(0, 0, -7*(n-1-i))
+	}
+	return out
+}
+
+// heatmapLines draws the days as a calendar: one row per weekday, one
+// column per week, the busier the day the denser its glyph. Days outside
+// the data are left blank, and zero-use days are a dot.
+func heatmapLines(t render.Theme, days []*agg.Group, w int) []string {
+	weeks := heatCols(days, w)
+	byDay := map[string]int64{}
+	var peak int64
+	for _, d := range days {
+		byDay[d.Key] = d.Tokens()
+		peak = max(peak, d.Tokens())
+	}
+	first, _ := time.Parse("2006-01-02", days[0].Key)
+	last, _ := time.Parse("2006-01-02", days[len(days)-1].Key)
+	letters := []string{"M", "T", "W", "T", "F", "S", "S"}
+	lines := make([]string, 7)
+	for r := range lines {
+		var sb strings.Builder
+		sb.WriteString(t.Dim(letters[r]) + " ")
+		for _, mon := range weeks {
+			d := mon.AddDate(0, 0, r)
+			switch {
+			case d.Before(first) || d.After(last):
+				sb.WriteString("  ")
+			default:
+				v := byDay[d.Format("2006-01-02")]
+				sb.WriteString(t.FG(render.CAccent, heatGlyph(v, peak)) + " ")
+			}
+		}
+		lines[r] = sb.String()
+	}
+	return lines
+}
+
+// heatGlyph picks a shade for a day's tokens relative to the busiest day.
+func heatGlyph(v, peak int64) string {
+	switch {
+	case v <= 0 || peak <= 0:
+		return "·"
+	case float64(v) >= 0.75*float64(peak):
+		return "█"
+	case float64(v) >= 0.5*float64(peak):
+		return "▓"
+	case float64(v) >= 0.25*float64(peak):
+		return "▒"
+	}
+	return "░"
+}
+
+// toolsLines is the Tools view: which tools and skills the assistant called
+// in the period. Only Claude Code transcripts record tool calls.
+func (m *model_) toolsLines() []string {
+	t, W := m.cfg.Theme, m.width
+	out := []string{""}
+	var total int64
+	var tools, skills []agg.ToolStat
+	for _, s := range m.sum.Tools {
+		total += s.Uses
+		if strings.HasPrefix(s.Name, "skill:") {
+			skills = append(skills, s)
+		} else {
+			tools = append(tools, s)
+		}
+	}
+	if total == 0 {
+		return append(out,
+			"  "+t.Dim("No tool calls in this period."),
+			"",
+			"  "+t.Dim("Claude Code transcripts record which tools and skills each reply used. The logs gg reads"),
+			"  "+t.Dim("for other tools do not record tool calls, so their totals are not in this view."))
+	}
+	nameW := max(12, min(40, W-34))
+	section := func(title string, list []agg.ToolStat) {
+		out = append(out, "  "+t.Bold(title))
+		for _, s := range list {
+			share := float64(s.Uses) / float64(total)
+			name := s.Name
+			out = append(out, "  "+t.Pad(name, nameW)+" "+t.PadL(render.Num(int(s.Uses)), 8)+"  "+
+				t.ColBar(share, max(4, min(24, W-nameW-22)), render.CAccent)+" "+t.PadL(render.Pct(share), 6))
+		}
+		out = append(out, "")
+	}
+	out = append(out, "  "+t.Bold(fmt.Sprintf("%s tool uses", render.Num(int(total))))+t.Dim(" in "+m.rangeNm),
+		"  "+t.Dim("Claude Code only. A skill is counted under skill:<name>; shares are of all uses."), "")
+	if len(tools) > 0 {
+		section("Tools", tools)
+	}
+	if len(skills) > 0 {
+		section("Skills", skills)
+	}
+	return out
 }

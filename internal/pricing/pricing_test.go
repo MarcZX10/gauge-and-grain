@@ -59,7 +59,7 @@ func TestCostUsesCacheMultipliers(t *testing.T) {
 	}
 }
 
-func TestUserOverrideWinsAndBadFileIsReportedNotFatal(t *testing.T) {
+func TestUserOverrideWinsAndBadFileFails(t *testing.T) {
 	dir := t.TempDir()
 	good := filepath.Join(dir, "p.json")
 	os.WriteFile(good, []byte(`{"models":[{"id":"codex-auto-review","input":1,"output":2},{"id":"gpt-5.4","input":9,"output":9}]}`), 0o644)
@@ -73,11 +73,15 @@ func TestUserOverrideWinsAndBadFileIsReportedNotFatal(t *testing.T) {
 	if p := tb.Lookup("gpt-5.4"); p.Input != 9 {
 		t.Error("user override must win over the embedded price")
 	}
+	// A named file that does not parse is an error, never a silent fallback.
 	bad := filepath.Join(dir, "bad.json")
 	os.WriteFile(bad, []byte(`{not json`), 0o644)
-	tb, err = Load(bad)
-	if err == nil || tb == nil || tb.Lookup("gpt-5.4") == nil {
-		t.Error("bad override: expect a warning and the embedded table still usable")
+	if tb, err = Load(bad); err == nil || tb != nil {
+		t.Error("a broken override must fail the load")
+	}
+	// Same for a named file that is missing.
+	if tb, err = Load(filepath.Join(dir, "missing.json")); err == nil || tb != nil {
+		t.Error("a missing override that was asked for must fail the load")
 	}
 }
 

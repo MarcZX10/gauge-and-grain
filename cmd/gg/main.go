@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -58,7 +59,7 @@ Filters (report, tui, export):
   --days N        last N days including today (default 30)
   --from DATE     start date YYYY-MM-DD (local time)     --to DATE   end date, inclusive
   --all           whole history
-  --provider ID   claude codex gemini qwen pi cline roo kilo zoo (repeatable, or comma separated)
+  --provider ID   claude codex gemini qwen pi deepseek opencode kilocli cline roo kilo zoo (repeatable, or comma separated)
   --model TEXT    model name contains TEXT (repeatable)
   --project TEXT  project path contains TEXT (repeatable)
 
@@ -93,6 +94,7 @@ type opts struct {
 	prov, models, projects  multi
 	noColor, ascii, noCache bool
 	pricesFile              string
+	periodGiven             bool // a period flag was passed explicitly
 	daily, notes, compact   bool
 	format, by              string
 	unpriced                bool
@@ -113,12 +115,32 @@ func (o *opts) bind(fs *flag.FlagSet) {
 	fs.StringVar(&o.pricesFile, "prices", "", "")
 	fs.BoolVar(&o.daily, "daily", false, "")
 	fs.BoolVar(&o.notes, "notes", false, "")
-	fs.BoolVar(&o.compact, "compact", os.Getenv("GG_COMPACT") != "", "")
-	fs.BoolVar(&o.compact, "c", os.Getenv("GG_COMPACT") != "", "")
+	fs.BoolVar(&o.compact, "compact", envFlag("GG_COMPACT"), "")
+	fs.BoolVar(&o.compact, "c", envFlag("GG_COMPACT"), "")
 	fs.StringVar(&o.format, "format", "json", "")
 	fs.StringVar(&o.by, "by", "day", "")
 	fs.BoolVar(&o.unpriced, "unpriced", false, "")
 	fs.Usage = func() { fmt.Fprintf(os.Stderr, usage, version) }
+}
+
+// refreshInterval is how often the dashboard rescans in the background.
+// GG_REFRESH sets it in seconds; 0 turns it off. The default is a minute.
+func refreshInterval() time.Duration {
+	if v := os.Getenv("GG_REFRESH"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return time.Minute
+}
+
+// prefsFile is where the dashboard remembers its sort, view and period.
+// "" (no config directory) turns the memory off.
+func prefsFile() string {
+	if d := configDir(); d != "" {
+		return filepath.Join(d, "tui.json")
+	}
+	return ""
 }
 
 func configDir() string {
@@ -152,10 +174,10 @@ func main() {
 	}
 	switch cmd {
 	case "help":
-		fmt.Printf(usage, version)
+		sayf(usage, version)
 		return
 	case "version":
-		fmt.Println("gg", version)
+		say("gg", version)
 		return
 	case "cache":
 		if len(args) == 1 && args[0] == "clear" {
@@ -163,7 +185,7 @@ func main() {
 			if err != nil {
 				die(err)
 			}
-			fmt.Printf("removed %d cache files from %s\n", n, cacheDir())
+			sayf("removed %d cache files from %s\n", n, cacheDir())
 			return
 		}
 		die(errors.New("usage: gg cache clear"))
@@ -174,13 +196,28 @@ func main() {
 	var o opts
 	fs := flag.NewFlagSet("gg", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	fs.Usage = func() {}
 	o.bind(fs)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fmt.Printf(usage, version)
+			sayf(usage, version)
 			return
 		}
-		die(err)
+		die(fmt.Errorf("%v (see `gg help`)", err))
+	}
+	daysSet, rangeSet := false, false
+	fs.Visit(func(f *flag.Flag) { // --days, --from, --to, --all: saved preferences must not override them
+		switch f.Name {
+		case "days":
+			daysSet = true
+			o.periodGiven = true
+		case "from", "to", "all":
+			rangeSet = true
+			o.periodGiven = true
+		}
+	})
+	if daysSet && rangeSet { // one period at a time: never silently ignore one of them
+		die(errors.New("--days cannot be combined with --from, --to or --all"))
 	}
 	if fs.NArg() > 0 {
 		die(fmt.Errorf("unexpected argument %q", fs.Arg(0)))
@@ -195,6 +232,22 @@ func die(err error) {
 	os.Exit(1)
 }
 
+// foldASCII is set when the output must be plain ASCII (--ascii, or a
+// non-UTF-8 locale). Everything printed on stdout goes through say/sayf/sayn,
+// which fold it, so no glyph reaches a terminal that cannot draw it.
+var foldASCII bool
+
+func printOut(s string) {
+	if foldASCII {
+		s = render.ASCIIOnly(s)
+	}
+	os.Stdout.WriteString(s)
+}
+
+func say(a ...any)                 { printOut(fmt.Sprintln(a...)) }
+func sayf(format string, a ...any) { printOut(fmt.Sprintf(format, a...)) }
+func sayn(a ...any)                { printOut(fmt.Sprint(a...)) }
+
 func theme(o *opts, f *os.File) render.Theme {
 	color := isatty.IsTerminal(f.Fd()) || isatty.IsCygwinTerminal(f.Fd())
 	if os.Getenv("FORCE_COLOR") != "" {
@@ -203,7 +256,9 @@ func theme(o *opts, f *os.File) render.Theme {
 	if o.noColor || os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
 		color = false
 	}
-	return render.Theme{Color: color, ASCII: o.ascii || !utf8Locale()}
+	ascii := o.ascii || !utf8Locale()
+	foldASCII = foldASCII || ascii
+	return render.Theme{Color: color, ASCII: ascii}
 }
 
 func termWidth(f *os.File) int {
@@ -292,19 +347,25 @@ func filterFrom(o *opts, now time.Time) (agg.Filter, string, error) {
 	return f, name, nil
 }
 
+// loadPrices uses the file named by --prices, or else the one in the config
+// directory when it exists. Either file failing to load is fatal.
 func loadPrices(o *opts) *pricing.Table {
 	path := o.pricesFile
 	if path == "" && configDir() != "" {
-		path = filepath.Join(configDir(), "prices.json")
+		if def := filepath.Join(configDir(), "prices.json"); fileExists(def) {
+			path = def
+		}
 	}
 	pt, err := pricing.Load(path)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "gg: warning:", err)
-	}
-	if pt == nil {
-		die(errors.New("could not load embedded prices"))
+		die(err)
 	}
 	return pt
+}
+
+func fileExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.Mode().IsRegular()
 }
 
 func detectAll() (map[string]providers.Detection, map[string]int) {
@@ -353,6 +414,7 @@ func run(cmd string, o *opts) error {
 			Providers: provs, Detect: detect, Prices: pt, CacheDir: cd, Filter: f, RangeName: rangeName,
 			Theme: theme(o, os.Stdout), Loc: now.Location(), DaysFlag: o.days, All: o.all,
 			Bounded: o.from == "" && o.to == "", Compact: o.compact,
+			Explicit: o.periodGiven, Refresh: refreshInterval(), Prefs: prefsFile(),
 		})
 	}
 
@@ -381,10 +443,10 @@ func run(cmd string, o *opts) error {
 		}
 	case "notes":
 		t := theme(o, os.Stdout)
-		fmt.Println(strings.Join(render.Notes(t, c, termWidth(os.Stdout)), "\n"))
+		say(strings.Join(render.Notes(t, c, termWidth(os.Stdout)), "\n"))
 	default:
 		t := theme(o, os.Stdout)
-		fmt.Print(render.Report(t, c, termWidth(os.Stdout), render.ReportOpts{Compact: o.compact, Daily: o.daily, Notes: o.notes}))
+		sayn(render.Report(t, c, termWidth(os.Stdout), render.ReportOpts{Compact: o.compact, Daily: o.daily, Notes: o.notes}))
 	}
 	if res.Cancelled {
 		os.Exit(130)
@@ -427,38 +489,38 @@ func scanWithProgress(ctx context.Context, provs []providers.Provider, cacheDir 
 
 func cmdSources(o *opts) error {
 	t := theme(o, os.Stdout)
-	fmt.Println(t.Section("Sources", "what was found on this machine; only local files are read"))
+	say(t.Section("Sources", "what was found on this machine; only local files are read"))
 	for _, p := range providers.All() {
 		d := p.Detect()
 		mark := map[providers.Status]string{providers.Ready: "ok", providers.NoData: "empty", providers.NotFound: "missing", providers.Unsupported: "unsupported"}[d.Status]
 		if d.Status == providers.Unsupported || d.Status == providers.NoData {
 			mark = t.Warn(mark)
 		}
-		fmt.Printf("  %s %s %s\n", t.Pad(p.Name(), 18), t.Pad(mark, 12), d.Detail)
+		sayf("  %s %s %s\n", t.Pad(p.Name(), 18), t.Pad(mark, 12), d.Detail)
 		for _, dir := range d.Dirs {
-			fmt.Printf("  %s %s\n", t.Pad("", 18), t.Dim(dir))
+			sayf("  %s %s\n", t.Pad("", 18), t.Dim(dir))
 		}
 		if d.Files > 0 {
-			fmt.Printf("  %s %s\n", t.Pad("", 18), t.Dim(fmt.Sprintf("%s files", render.Num(d.Files))))
+			sayf("  %s %s\n", t.Pad("", 18), t.Dim(fmt.Sprintf("%s files", render.Num(d.Files))))
 		}
 	}
-	fmt.Println()
-	fmt.Println(t.Dim("  Cache: " + cacheDir() + "   Prices override: " + filepath.Join(configDir(), "prices.json")))
+	say()
+	say(t.Dim("  Cache: " + cacheDir() + "   Prices override: " + filepath.Join(configDir(), "prices.json")))
 	return nil
 }
 
 func cmdPrices(o *opts) error {
 	t := theme(o, os.Stdout)
 	pt := loadPrices(o)
-	fmt.Println(t.Section("Prices", "USD per 1M tokens — list prices, offline, inspectable"))
+	say(t.Section("Prices", "USD per 1M tokens — list prices, offline, inspectable"))
 	for _, s := range pt.Sources {
-		fmt.Printf("  %s  %s  %s\n", t.Pad(s.ID, 10), t.Pad("updated "+s.Updated, 18), t.Dim(s.URL))
+		sayf("  %s  %s  %s\n", t.Pad(s.ID, 10), t.Pad("updated "+s.Updated, 18), t.Dim(s.URL))
 		if s.Note != "" {
-			fmt.Printf("  %s  %s\n", t.Pad("", 10), t.Dim(s.Note))
+			sayf("  %s  %s\n", t.Pad("", 10), t.Dim(s.Note))
 		}
 	}
-	fmt.Println()
-	fmt.Printf("  %s %s %s %s %s\n", t.Dim(t.Pad("model", 22)), t.Dim(t.PadL("input", 7)), t.Dim(t.PadL("output", 8)), t.Dim(t.PadL("cache rd", 9)), t.Dim("source"))
+	say()
+	sayf("  %s %s %s %s %s\n", t.Dim(t.Pad("model", 22)), t.Dim(t.PadL("input", 7)), t.Dim(t.PadL("output", 8)), t.Dim(t.PadL("cache rd", 9)), t.Dim("source"))
 	for i := range pt.Models {
 		m := &pt.Models[i]
 		cr := "derived"
@@ -471,13 +533,13 @@ func cmdPrices(o *opts) error {
 		if m.User {
 			src += " (yours)"
 		}
-		fmt.Printf("  %s %s %s %s %s\n", t.Pad(m.ID, 22), t.PadL(fmt.Sprintf("%.2f", m.Input), 7), t.PadL(fmt.Sprintf("%.2f", m.Output), 8), t.PadL(cr, 9), src)
+		sayf("  %s %s %s %s %s\n", t.Pad(m.ID, 22), t.PadL(fmt.Sprintf("%.2f", m.Input), 7), t.PadL(fmt.Sprintf("%.2f", m.Output), 8), t.PadL(cr, 9), src)
 	}
-	fmt.Println()
-	fmt.Println(t.Dim("  * derived as 0.1x input (not listed by the vendor)."))
-	fmt.Println(t.Dim("  Add or override models in " + filepath.Join(configDir(), "prices.json") + " (same format; see docs/PRICING.md)."))
+	say()
+	say(t.Dim("  * derived as 0.1x input (not listed by the vendor)."))
+	say(t.Dim("  Add or override models in " + filepath.Join(configDir(), "prices.json") + " (same format; see docs/PRICING.md)."))
 	if o.unpriced {
-		fmt.Println()
+		say()
 		return unpricedReport(o, pt, t)
 	}
 	return nil
@@ -501,14 +563,35 @@ func unpricedReport(o *opts, pt *pricing.Table, t render.Theme) error {
 			seen[res.Events[i].Provider+"/"+res.Events[i].Model] += res.Events[i].Total()
 		}
 	}
-	fmt.Println(t.Section("Unpriced models in your history", "tokens counted, cost excluded"))
+	say(t.Section("Unpriced models in your history", "tokens counted, cost excluded"))
 	if len(seen) == 0 {
-		fmt.Println("  none")
+		say("  none")
 	}
-	for m, n := range seen {
-		fmt.Printf("  %s %s\n", t.Pad(m, 36), render.Tokens(n))
+	keys := make([]string, 0, len(seen)) // most tokens first, then by name: the same order every run
+	for k := range seen {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if seen[keys[i]] != seen[keys[j]] {
+			return seen[keys[i]] > seen[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	for _, k := range keys {
+		sayf("  %s %s\n", t.Pad(k, 36), render.Tokens(seen[k]))
+	}
+	if res.Cancelled {
+		say(t.Warn("  PARTIAL: the scan was cancelled, so this list may be incomplete."))
+		os.Exit(130)
 	}
 	return nil
+}
+
+// envFlag reads a boolean environment setting: unset, empty, "0" and "false"
+// are off, anything else is on.
+func envFlag(name string) bool {
+	v := strings.TrimSpace(os.Getenv(name))
+	return v != "" && v != "0" && !strings.EqualFold(v, "false")
 }
 
 // utf8Locale is false only when the locale explicitly names a non-UTF-8

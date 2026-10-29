@@ -342,7 +342,8 @@ func TestDailySelectedAndHoveredDayHasItsOwnBarColour(t *testing.T) {
 	press(m, "2")
 	lines := strings.Split(m.View(), "\n")
 	g := m.geometry()
-	chartRows := lines[bodyTop+1 : bodyTop+1+g.chartH-3]
+	chartTop := bodyTop + g.heatH
+	chartRows := lines[chartTop+1 : chartTop+1+g.chartH-3]
 	count := func() (cols map[int]bool) {
 		cols = map[int]bool{}
 		for _, l := range chartRows {
@@ -364,17 +365,21 @@ func TestDailySelectedAndHoveredDayHasItsOwnBarColour(t *testing.T) {
 	}
 	var x int
 	for x = 2; x < m.width-2; x++ {
-		if m.chartDayAt(x, bodyTop+2) == target {
+		if m.chartDayAt(x, chartTop+2) == target {
 			break
 		}
 	}
-	m.Update(tea.MouseMsg{X: x, Y: bodyTop + 2, Button: tea.MouseButtonNone, Action: tea.MouseActionMotion})
-	if got := n - 1 - m.cursor[tabDaily]; got != target {
-		t.Fatalf("hovering chart day %d selected day %d", target, got)
+	before := m.cursor[tabDaily]
+	m.Update(tea.MouseMsg{X: x, Y: chartTop + 2, Button: tea.MouseButtonNone, Action: tea.MouseActionMotion})
+	if got := n - 1 - m.hoverCur; got != target {
+		t.Fatalf("hovering chart day %d previewed day %d", target, got)
+	}
+	if m.cursor[tabDaily] != before {
+		t.Error("the pointer must not move the cursor: Enter follows the keyboard and clicks")
 	}
 	lines = strings.Split(m.View(), "\n")
 	moved := map[int]bool{}
-	for _, l := range lines[bodyTop+1 : bodyTop+1+g.chartH-3] {
+	for _, l := range lines[chartTop+1 : chartTop+1+g.chartH-3] {
 		for _, c := range colsWithColour(l, render.CSelect) {
 			moved[c] = true
 		}
@@ -393,9 +398,9 @@ func TestDailySelectedAndHoveredDayHasItsOwnBarColour(t *testing.T) {
 	}
 	// clicking a bar selects it, and clicking the selected bar drills in
 	other := (target + 1) % n
-	for x = 2; x < m.width-2 && m.chartDayAt(x, bodyTop+2) != other; x++ {
+	for x = 2; x < m.width-2 && m.chartDayAt(x, chartTop+2) != other; x++ {
 	}
-	click := tea.MouseMsg{X: x, Y: bodyTop + 2, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress}
+	click := tea.MouseMsg{X: x, Y: chartTop + 2, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress}
 	m.Update(click)
 	if n-1-m.cursor[tabDaily] != other || m.tab != tabDaily {
 		t.Errorf("click should select day %d", other)
