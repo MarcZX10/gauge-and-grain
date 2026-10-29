@@ -675,7 +675,21 @@ func (m *model_) drillDown() {
 		}
 		m.drill = append(m.drill, "provider:"+g.Key)
 	case tabModels:
-		m.filter.Models = []string{strings.TrimPrefix(g.Label, "")}
+		name := g.Label
+		for mdl := range g.Models { // the real model name, without a "(provider)" suffix
+			name = mdl
+		}
+		if len(g.Providers) == 1 && strings.HasSuffix(g.Label, ")") && name != g.Label {
+			for i, id := range m.provList() { // the same name under another provider is a different row
+				for p := range g.Providers {
+					if id == p {
+						m.provIdx = i + 1
+					}
+				}
+			}
+			m.drill = append(m.drill, "provider:"+firstKey(g.Providers))
+		}
+		m.filter.Models = []string{name}
 		m.drill = append(m.drill, "model:"+g.Label)
 	case tabProjects:
 		m.filter.Projects = []string{g.Key}
@@ -1283,12 +1297,17 @@ func (m *model_) notesLines() []string {
 	}
 	out = append(out, t.Panel(title, nl, W, color)...)
 
-	// sources
+	// sources: tools that were found get a full entry; the rest share one line
 	var sl []string
+	var absent []string
 	for _, p := range providers.All() {
 		id := p.ID()
 		d, ok := m.cfg.Detect[id]
 		if !ok {
+			continue
+		}
+		if d.Status == providers.NotFound {
+			absent = append(absent, providerName(id))
 			continue
 		}
 		status := d.Status.String()
@@ -1304,13 +1323,16 @@ func (m *model_) notesLines() []string {
 		if n := m.res.Files[id]; n > 0 {
 			files = t.Dim(fmt.Sprintf(" · %s files", render.Num(n)))
 		}
-		sl = append(sl, t.Dot(id)+" "+t.Bold(t.Pad(providerName(id), 14))+t.Pad(status, 24)+files)
+		sl = append(sl, t.Dot(id)+" "+t.Bold(t.Pad(providerName(id), 18))+t.Pad(status, 12)+files)
 		for _, dir := range d.Dirs {
 			sl = append(sl, "    "+t.Dim(dir))
 		}
 		if len(d.Dirs) == 0 {
 			sl = append(sl, "    "+t.Dim(d.Detail))
 		}
+	}
+	if len(absent) > 0 {
+		sl = append(sl, "", t.Dim("not found: "+strings.Join(absent, ", ")), t.Dim("  (each can be pointed elsewhere with its *_HOME variable; see docs/PROVIDERS.md)"))
 	}
 	sl = append(sl, "", t.Dim(fmt.Sprintf("scan: %s files (%d from cache, %d parsed) → %s API calls after de-duplication, in %s",
 		render.Num(m.res.Cached+m.res.Parsed), m.res.Cached, m.res.Parsed, render.Num(len(m.events)), m.scanTook.Round(100*time.Millisecond))))
@@ -1573,4 +1595,11 @@ func humanBytes(n int64) string {
 		return fmt.Sprintf("%.0f MB", float64(n)/(1<<20))
 	}
 	return fmt.Sprintf("%.1f GB", float64(n)/(1<<30))
+}
+
+func firstKey(m map[string]struct{}) string {
+	for k := range m {
+		return k
+	}
+	return ""
 }

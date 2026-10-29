@@ -203,3 +203,20 @@ func BenchmarkSummarizeIndexed(b *testing.B) {
 		idx.Summarize(Filter{})
 	}
 }
+
+func TestSameModelNameFromTwoProvidersIsShownAsTwoDistinctRows(t *testing.T) {
+	pt, _ := pricing.Load("")
+	evs := []model.Event{
+		ev(1, "codex", "gpt-5.4", "/a", "s1", 10, 10),
+		ev(1, "opencode", "gpt-5.4", "/a", "s2", 20, 20),
+		ev(1, "claude", "claude-sonnet-5-5", "/a", "s3", 5, 5),
+	}
+	s := Summarize(evs, Filter{}, pt, utc)
+	labels := map[string]bool{}
+	for _, g := range s.ByModel {
+		labels[g.Label] = true
+	}
+	if !labels["gpt-5.4 (codex)"] || !labels["gpt-5.4 (opencode)"] || !labels["claude-sonnet-5-5"] || len(s.ByModel) != 3 {
+		t.Errorf("labels: %v", labels)
+	}
+}

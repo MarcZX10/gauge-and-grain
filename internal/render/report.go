@@ -185,7 +185,7 @@ func TableRows(t Theme, gs []*agg.Group, total int64, width int, labelHdr string
 // TableRowsOpt is TableRows with the share bar optionally suppressed.
 func TableRowsOpt(t Theme, gs []*agg.Group, total int64, width int, labelHdr string, flagUnpriced, noBar bool) (string, []string) {
 	showCost := width >= 56
-	showBar := width >= 78 && !noBar
+	showBar := width >= 96 && !noBar // below this, labels matter more than the share bar
 	costW, tokW, sesW := 10, 9, 5
 	barW := 14
 	fixed := 2 + tokW + 2 + 6 + 2
@@ -210,7 +210,7 @@ func TableRowsOpt(t Theme, gs []*agg.Group, total int64, width int, labelHdr str
 		}
 		label := g.Label
 		lwEff, prefix, color := lw, "", CAccent
-		if t.Color && lw > 12 {
+		if t.Color && lw > 12 && !noBar { // noBar marks lists (days) where a provider dot would mean nothing
 			prefix, lwEff = "  ", lw-2
 			if len(g.Providers) == 1 {
 				for p := range g.Providers {

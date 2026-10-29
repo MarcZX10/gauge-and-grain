@@ -460,3 +460,49 @@ func TestEveryViewStillFitsInCompactMode(t *testing.T) {
 		}
 	}
 }
+
+func TestDrillDownIntoAModelNameSharedByTwoProviders(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	// make the same model name appear under a second provider
+	extra := m.events[0]
+	extra.Provider, extra.Model, extra.Key = "opencode", "claude-opus-5-5", "x"
+	for i := range m.events {
+		if m.events[i].Model == "claude-opus-5-5" {
+			extra = m.events[i]
+			extra.Provider, extra.Key = "opencode", "dup"
+			break
+		}
+	}
+	m.events = append(m.events, extra)
+	m.idx = agg.NewIndex(m.events, m.cfg.Prices, time.UTC)
+	m.cfg.Providers = append(m.cfg.Providers, providers.ByID("opencode"))
+	m.applyPeriod()
+	resize(m, 120, 40)
+	press(m, "4")
+	row := -1
+	for i, g := range m.groups() {
+		if strings.HasPrefix(g.Label, "claude-opus-5-5 (") {
+			row = i
+		}
+	}
+	if row < 0 {
+		t.Fatalf("expected a disambiguated row, got %v", labelsOf(m.groups()))
+	}
+	m.cursor[tabModels] = row
+	want := m.groups()[row].Tokens()
+	press(m, "enter")
+	if got := m.sum.Total.Tokens(); got != want || got == 0 {
+		t.Errorf("drilling into the shared-name row must show exactly that row (%d tokens), got %d", want, got)
+	}
+	press(m, "esc", "esc")
+	if len(m.drill) != 0 || m.provIdx != 0 {
+		t.Errorf("esc must undo the model and the provider filter: drill=%v provIdx=%d", m.drill, m.provIdx)
+	}
+}
+
+func labelsOf(gs []*agg.Group) (out []string) {
+	for _, g := range gs {
+		out = append(out, g.Label)
+	}
+	return
+}

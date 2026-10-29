@@ -382,12 +382,29 @@ func (x *Index) Summarize(f Filter) *Summary {
 	}
 	s.ByDay = fillDays(day, f, loc)
 	s.ByProvider, s.ByModel, s.ByProject, s.BySession = sorted(prov), sorted(mod), sorted(proj), sorted(sess)
+	disambiguate(s.ByModel)
 	for _, g := range s.BySession {
 		for p := range g.Providers {
 			g.Label = p + " " + g.Label
 		}
 	}
 	return s
+}
+
+// disambiguate appends the provider to model names that more than one
+// provider reports (gpt-5.4 via Codex and via OpenCode are different rows).
+func disambiguate(gs []*Group) {
+	seen := map[string]int{}
+	for _, g := range gs {
+		seen[g.Label]++
+	}
+	for _, g := range gs {
+		if seen[g.Label] > 1 {
+			for p := range g.Providers {
+				g.Label += " (" + p + ")"
+			}
+		}
+	}
 }
 
 func sorted(m map[string]*Group) []*Group {
