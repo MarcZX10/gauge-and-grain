@@ -46,6 +46,13 @@ SQLite databases (OpenCode, Kilo CLI) are never written to, and `gg` creates no 
 them. A database with no write-ahead log is opened in immutable mode. When its `-wal` holds recent rows, the database
 and its log are copied to a private temporary directory (at most 1 GB), read there, and the copy is deleted.
 
+Two more files can be written, both only when you ask for them or when the dashboard runs:
+
+- **`tui.json`** in the config directory (`<config dir>/gauge-and-grain/`): the dashboard's sort, view, period preset and
+  compact mode. It holds no paths, no names and no usage figures. Delete it to forget them.
+- **`gg-<view>-<time>.csv`** in the folder you started `gg` from, when you press `e` in the dashboard. It is the same
+  CSV as `gg export`: it can contain project paths and session ids (see below). Nothing is written unless you press `e`.
+
 ## What an export contains
 
 [Exports](EXPORT.md) include **working-directory paths and session ids** (and model names). They contain no

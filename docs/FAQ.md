@@ -41,7 +41,7 @@ counter would add up; the period boundaries differ (`gg` uses whole local days);
 ## The first run is slow
 
 It reads every log once (a big Codex history can be tens of gigabytes). The dashboard and the report show progress and
-you can cancel with `Esc` / `Ctrl-C`: finished files stay cached and the next run resumes. After that only changed
+you can cancel with `Esc` in the dashboard (or `Ctrl-C` in the report): finished files stay cached and the next run resumes. After that only changed
 files are read, and a live session is resumed from where it stopped. A warm start takes about two seconds per million
 calls. `--no-cache` ignores the cache; `gg cache clear` empties it.
 

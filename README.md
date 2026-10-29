@@ -35,7 +35,7 @@ gg notes                    # how far to trust the numbers
 
 ## A quick tour
 
-**Daily** — the selected (or hovered) day lights up in the chart; click a bar to drill into that day.
+**Daily** — the selected day lights up in the chart. Point at a bar to preview that day; click it to select it, and click again to drill into it.
 
 <p align="center"><img src="docs/img/daily.png" alt="Daily view" width="900"></p>
 

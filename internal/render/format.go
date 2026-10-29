@@ -11,9 +11,9 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-// Theme controls colour and glyphs. Colour carries meaning only:
-// cyan = headings/links, yellow = caution (estimates, unpriced, partial),
-// green/red = direction of change, dim = explanations.
+// Theme controls colour and glyphs. Colour carries meaning only: yellow =
+// caution (estimates, unpriced, partial), cyan = headings, dim = explanations.
+// Direction of change is shown by the arrow, never by colour.
 type Theme struct {
 	Color bool
 	ASCII bool
@@ -30,9 +30,34 @@ func (t Theme) Bold(s string) string   { return t.wrap("1", s) }
 func (t Theme) Dim(s string) string    { return t.wrap("2", s) }
 func (t Theme) Head(s string) string   { return t.wrap("1;36", s) }
 func (t Theme) Warn(s string) string   { return t.wrap("33", s) }
-func (t Theme) Up(s string) string     { return t.wrap("33", s) }
-func (t Theme) Down(s string) string   { return t.wrap("32", s) }
+func (t Theme) Up(s string) string     { return s } // direction is the arrow's job
+func (t Theme) Down(s string) string   { return s }
 func (t Theme) Invert(s string) string { return t.wrap("7", s) }
+
+// asciiGlyphs maps every glyph the interface draws to a plain-ASCII stand-in.
+// It is applied to finished output (never to measured text), so one table
+// covers the TUI, the report and the compact summary.
+var asciiGlyphs = strings.NewReplacer(
+	"≥", ">=", "≤", "<=", "…", "...", "→", "->", "←", "<-", "↑", "^", "↓", "v", "↕", "^",
+	"◂", "<", "‹", "<", "›", ">", "⚠", "!", "ℹ", "i", "✓", "+", "◐", "~", "○", "o", "■", "#",
+	"█", "#", "░", ".", "▏", "|", "▎", "|", "▍", "|", "▌", "|", "▋", "|", "▊", "|", "▉", "|",
+	"▁", "_", "▂", ".", "▃", "-", "▄", "=", "▅", "+", "▆", "*", "▇", "#",
+	"▲", "^", "▼", "v", "│", "|", "┃", "|", "─", "-", "━", "=", "╭", "+", "╮", "+", "╰", "+", "╯", "+",
+	"●", "*", "↳", ">", "⏎", "Enter", "·", "-", "—", "-", "–", "-", "“", "\"", "”", "\"", "‘", "'", "’", "'",
+	"⠋", "|", "⠙", "/", "⠹", "-", "⠸", "\\", "⠼", "|", "⠴", "/", "⠦", "-", "⠧", "\\", "⠇", "|", "⠏", "/",
+)
+
+// Fold returns s with ASCII stand-ins for every glyph when the theme is
+// ASCII-only, and s unchanged otherwise.
+func (t Theme) Fold(s string) string {
+	if !t.ASCII {
+		return s
+	}
+	return asciiGlyphs.Replace(s)
+}
+
+// ASCIIOnly replaces every glyph in s with its ASCII stand-in.
+func ASCIIOnly(s string) string { return asciiGlyphs.Replace(s) }
 
 var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
 

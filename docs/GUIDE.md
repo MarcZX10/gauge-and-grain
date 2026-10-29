@@ -108,24 +108,38 @@ tokens, cost, cache hit share, first/last seen.
 |---|---|
 | `←` `→` · `Tab` `Shift+Tab` · `h` `l` · `1`–`7` | switch view |
 | `↑` `↓` · `j` `k` · `PgUp` `PgDn` · `g` `G` | move / scroll |
-| `Enter` | **drill in**: filter everything to the selected day, provider, model (and its provider when the name is shared) or project |
+| `Enter` | **drill in**: filter everything to the selected day, provider, model (and its provider when the name is shared) or project. On Sessions, Enter says there is nothing finer. |
 | `Esc` · `Backspace` | undo the last drill-down → clear the search → back to Overview |
 | `t` · `d` `D` · `[` `]` `.` | periods — see above |
-| `p` | cycle the provider filter |
+| `p` | cycle the provider filter (this replaces a provider given with `--provider`) |
 | `/` | search model, project or session text (`Enter` applies, `Esc` cancels) |
-| `s` | sort by tokens or by estimated cost |
+| `s` | sort by tokens or by estimated cost (applies to Providers, Models, Projects and Sessions) |
 | `m` | toggle [compact mode](#compact-mode) |
-| `c` | clear every filter |
-| `r` | rescan (unchanged files are not re-read) |
-| `?` | help · `q` `Ctrl-C` quit |
+| `e` | export the current view to a CSV file, `gg-<view>-<time>.csv`, in the folder you started `gg` from |
+| `c` | clear every filter, including the ones given on the command line |
+| `r` | rescan now (unchanged files are not re-read) |
+| `?` | help · `q` or `Ctrl-C` quit (`q` also quits from the help screen) |
 
 Active filters appear as chips at the right of the header, so you always know why the numbers are what they are.
+On a narrow terminal the chips become a count (`2 filters`) and the status line names them. The Notes warning badge
+stays visible on a narrow terminal too.
+
+While the first scan runs, `q` quits and `Esc` cancels the scan (finished files stay cached).
+
+The dashboard rescans in the background every minute (`GG_REFRESH=<seconds>` changes that; `0` turns it off). The
+view keeps its place, and the status line shows `updating…` and the time of the last update.
 
 ### Mouse
 
 Click a view tab, a period chip, `Pick…`, or a row (click the selected row again to drill in). The wheel scrolls.
-On **Daily**, the selected day is drawn in its own colour in the chart, and **pointing at a bar or a row selects that
-day**, so the chart follows the pointer; click a bar to select it, and again to drill into that day.
+While the period picker is open, the mouse only chooses from it: click one of its lines to apply that period.
+
+On **Daily**, the selected day is drawn in its own colour in the chart. **Pointing at a bar or a row previews that
+day** (the chart follows the pointer) but does not change the selection: click a bar to select it, and click it again
+to drill into that day. Enter always acts on the keyboard selection.
+
+The dashboard enables mouse reporting, so the terminal does not select text on a plain drag. Hold **Shift** while you
+drag to select and copy text (on most terminals; over SSH or tmux the multiplexer may need its own setting).
 
 ## Compact mode
 
@@ -172,7 +186,9 @@ every price. Warnings come first.
 |---|---|
 | Price overrides | `<config dir>/gauge-and-grain/prices.json`, or `--prices FILE` — see [PRICING.md](PRICING.md) |
 | Cache | `<cache dir>/gauge-and-grain/`; `--no-cache` ignores it; `gg cache clear` deletes it |
-| Where tools keep their data | `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_HOME`, `QWEN_HOME`, `PI_HOME`, `OPENCODE_HOME`, `KILO_HOME`, `DSH_HOME`, `XDG_DATA_HOME`; `GG_VSCODE_USER_DIRS` replaces the editor search for Cline/Roo/Kilo/Zoo — see [PROVIDERS.md](PROVIDERS.md) |
+| Where tools keep their data | `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_HOME`, `QWEN_HOME`, `PI_HOME`, `OPENCODE_HOME`, `KILO_HOME`, `DSH_HOME`, `XDG_DATA_HOME`; `GG_VSCODE_USER_DIRS` (developer and test override) replaces the editor search for Cline/Roo/Kilo/Zoo — see [PROVIDERS.md](PROVIDERS.md) |
+| Dashboard memory | `<config dir>/gauge-and-grain/tui.json` keeps the sort, the view, the period preset and compact mode between runs. A period given on the command line always wins. Delete the file to forget them. |
+| Background rescan | `GG_REFRESH=<seconds>` (default `60`, `0` turns it off) |
 | Compact by default | `GG_COMPACT=1` |
 | Test/dev overrides | `GG_CONFIG_DIR`, `GG_CACHE_DIR` |
 
@@ -194,6 +210,6 @@ paths in use.
 ## Cancelling and the cache
 
 The first scan of a large history can take a while: the dashboard shows a progress panel, the report shows a meter on
-stderr. **`Esc` (dashboard) or `Ctrl-C` (report) cancels cleanly**: the files already read stay cached, what was read
+stderr. **`Esc` (dashboard, while it scans) or `Ctrl-C` (report) cancels cleanly**: the files already read stay cached, what was read
 so far is shown and clearly marked **PARTIAL**, and the next run resumes where it stopped. Later runs read only what
 changed; a log that has only grown (an active session) is resumed from the last complete line instead of re-read.

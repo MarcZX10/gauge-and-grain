@@ -368,9 +368,13 @@ func TestDailySelectedAndHoveredDayHasItsOwnBarColour(t *testing.T) {
 			break
 		}
 	}
+	before := m.cursor[tabDaily]
 	m.Update(tea.MouseMsg{X: x, Y: bodyTop + 2, Button: tea.MouseButtonNone, Action: tea.MouseActionMotion})
-	if got := n - 1 - m.cursor[tabDaily]; got != target {
-		t.Fatalf("hovering chart day %d selected day %d", target, got)
+	if got := n - 1 - m.hoverCur; got != target {
+		t.Fatalf("hovering chart day %d previewed day %d", target, got)
+	}
+	if m.cursor[tabDaily] != before {
+		t.Error("the pointer must not move the cursor: Enter follows the keyboard and clicks")
 	}
 	lines = strings.Split(m.View(), "\n")
 	moved := map[int]bool{}

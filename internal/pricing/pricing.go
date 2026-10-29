@@ -48,36 +48,35 @@ type Table struct {
 	ids     []string // sorted longest first, for prefix matching
 }
 
-// Load reads the embedded table and merges an optional override file.
-// Override entries replace embedded ones with the same id; a bad override
-// file is reported but never prevents the embedded table from loading.
+// Load reads the embedded table and merges an override file when one is
+// named. Override entries replace embedded ones with the same id. A named
+// file that cannot be read or does not parse is an error: a price the user
+// asked for must never be silently replaced by the default one.
 func Load(overridePath string) (*Table, error) {
 	t := &Table{}
 	if err := json.Unmarshal(embedded, t); err != nil {
 		return nil, fmt.Errorf("embedded prices: %w", err)
 	}
-	var warn error
 	if overridePath != "" {
-		if b, err := os.ReadFile(overridePath); err == nil {
-			var o Table
-			if err := json.Unmarshal(b, &o); err != nil {
-				warn = fmt.Errorf("%s: %w (ignored)", overridePath, err)
-			} else {
-				t.Sources = append(t.Sources, o.Sources...)
-				for i := range o.Models {
-					o.Models[i].User = true
-					if o.Models[i].Source == "" {
-						o.Models[i].Source = "user"
-					}
-				}
-				t.Models = append(t.Models, o.Models...)
-			}
-		} else if !os.IsNotExist(err) {
-			warn = err
+		b, err := os.ReadFile(overridePath)
+		if err != nil {
+			return nil, fmt.Errorf("prices file: %w", err)
 		}
+		var o Table
+		if err := json.Unmarshal(b, &o); err != nil {
+			return nil, fmt.Errorf("%s: %w", overridePath, err)
+		}
+		t.Sources = append(t.Sources, o.Sources...)
+		for i := range o.Models {
+			o.Models[i].User = true
+			if o.Models[i].Source == "" {
+				o.Models[i].Source = "user"
+			}
+		}
+		t.Models = append(t.Models, o.Models...)
 	}
 	t.index()
-	return t, warn
+	return t, nil
 }
 
 func (t *Table) index() {
