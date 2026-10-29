@@ -35,6 +35,7 @@ again. Not modelled: batch/flex/priority tiers, long-context surcharges, discoun
 | Source | Updated | Notes |
 |---|---|---|
 | Anthropic API pricing | 2026-10-06 | Cache-write multipliers from the documented convention. Where a model's cache-read price is not listed it is derived as 0.1× input and marked `derived` in `gg prices`. Haiku 5.5 uses the ≤100K-token prompt rate. |
+| Gemini API pricing | 2026-10-29 | Standard tier. Retrieved through a page summariser — verify against the URL. Prompts over 200K tokens cost more for some models and are **not** modelled (cost is a lower bound there); announced price increases are noted per model. Cache storage fees are not modelled. |
 | OpenAI API pricing | 2026-10-29 | Standard tier, context ≤ 272K. **Retrieved through a page summariser** — verify against the URL before relying on exact figures. |
 
 Prices change. Update `internal/pricing/prices.json` (and its `updated` date) in a PR, or override
