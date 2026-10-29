@@ -200,3 +200,7 @@ make cross        # compile for linux/darwin/windows × amd64/arm64
 ```
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how to add a provider.
+
+## Licence
+
+MIT — see [LICENSE](LICENSE).
