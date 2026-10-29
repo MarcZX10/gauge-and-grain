@@ -29,7 +29,7 @@ type Codex struct{}
 
 func (Codex) ID() string         { return "codex" }
 func (Codex) Name() string       { return "OpenAI Codex" }
-func (Codex) ParserVersion() int { return 2 }
+func (Codex) ParserVersion() int { return 3 } // 3: tool calls
 func (Codex) Fields() Fields {
 	return Fields{CacheRead: true, CacheWrite: true, Reasoning: true,
 		Note: "cache writes are not billed separately by OpenAI"}
@@ -97,6 +97,10 @@ var (
 	cxCount  = []byte(`token_count`)
 	cxMeta   = []byte(`session_meta`)
 	cxTurn   = []byte(`turn_context`)
+	// cxCall matches the names of call items (function_call, custom_tool_call,
+	// web_search_call, ...). It is looked for near the start of a line, where
+	// the item type is, so the long call inputs are not scanned.
+	cxCall = []byte(`_call"`)
 )
 
 func (u *codexUsage) event(base model.Event, st *model.ParseStats) (model.Event, bool) {
@@ -132,6 +136,10 @@ type codexState struct {
 	// cumulative token_count events only repeat what the records already
 	// say, so they are tracked (to keep PrevTotal right) but not counted.
 	UsingRecords bool
+	// Pending are the tool calls seen since the last usage event. Codex writes
+	// each call before the usage record of the response that made it, so they
+	// belong to the next usage event (id=name entries, see model.ToolEntry).
+	Pending []string
 }
 
 // codexParser keeps one list of events: the usage counted from cumulative
@@ -180,6 +188,9 @@ func (p *codexParser) Line(line []byte) {
 	isMeta := bytes.Contains(line, cxMeta)
 	isTurn := bytes.Contains(line, cxTurn)
 	if !isRec && !isCount && !isMeta && !isTurn {
+		if bytes.Contains(line[:min(len(line), 256)], cxCall) {
+			p.addCall(line)
+		}
 		return
 	}
 	st.Lines++
@@ -225,6 +236,7 @@ func (p *codexParser) Line(line []byte) {
 		base.Key = "codex:resp:" + pl.ResponseID
 		if e, ok := pl.Usage.event(base, st); ok {
 			p.s.UsingRecords = true
+			e.Tools = p.takePending()
 			p.evs = append(p.evs, e)
 		} else {
 			st.Malformed++
@@ -256,9 +268,54 @@ func (p *codexParser) Line(line []byte) {
 		}
 		base.Key = "codex:cum:" + p.s.Session + ":" + itoa(cur)
 		if e, ok := d.event(base, st); ok {
+			e.Tools = p.takePending()
 			p.evs = append(p.evs, e)
 		}
 	}
+}
+
+// codexCall reads only what names a call: the item type, its call id, its
+// name and the time. The input (a whole patch, for instance) is skipped.
+type codexCall struct {
+	Timestamp string `json:"timestamp"`
+	Payload   struct {
+		Type   string `json:"type"`
+		CallID string `json:"call_id"`
+		Name   string `json:"name"`
+	} `json:"payload"`
+}
+
+// addCall records one tool call as a pending use. Calls with no id or no
+// name cannot be counted once, so they are skipped.
+func (p *codexParser) addCall(line []byte) {
+	var c codexCall
+	if json.Unmarshal(line, &c) != nil {
+		return
+	}
+	var entry string
+	switch c.Payload.Type {
+	case "function_call", "custom_tool_call":
+		if c.Payload.CallID == "" || c.Payload.Name == "" {
+			return
+		}
+		entry = model.ToolEntry(c.Payload.CallID, c.Payload.Name)
+	case "web_search_call", "tool_search_call":
+		// no call id in these records: the time stands in for it
+		entry = model.ToolEntry("ws:"+c.Timestamp, strings.TrimSuffix(c.Payload.Type, "_call"))
+	default:
+		return
+	}
+	p.s.Pending = append(p.s.Pending, entry)
+}
+
+// takePending hands the pending calls to the usage event being emitted.
+func (p *codexParser) takePending() string {
+	if len(p.s.Pending) == 0 {
+		return ""
+	}
+	t := strings.Join(p.s.Pending, ",")
+	p.s.Pending = nil
+	return t
 }
 
 func cumTotal(u *codexUsage) int64 {

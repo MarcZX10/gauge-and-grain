@@ -288,20 +288,34 @@ func TestInteractionsAreFastOnLargeHistory(t *testing.T) {
 			Input: 10, CacheRead: 100, Output: 5, Has: model.HasCacheRead})
 	}
 	res := &scan.Result{Events: evs, Files: map[string]int{"claude": 1, "codex": 1}}
-	m := &model_{cfg: Config{Prices: pt, Theme: render.Theme{Color: true}, Loc: time.UTC, Detect: map[string]providers.Detection{}, Providers: []providers.Provider{providers.Claude{}, providers.Codex{}}},
-		res: res, events: evs, per: periodState{preset: presetIndex("all")}}
 	t0 := time.Now()
-	m.idx = agg.NewIndex(evs, pt, time.UTC)
-	m.applyPeriod()
-	t.Logf("index + first summary: %v", time.Since(t0))
-	resize(m, 150, 46)
-	_ = m.View()
-	for _, k := range []string{"p", "d", "d", "t", "esc", "[", "]", "4", "down", "enter", "esc", "s"} {
-		start := time.Now()
-		press(m, k)
+	idx := agg.NewIndex(evs, pt, time.UTC)
+	t.Logf("index: %v", time.Since(t0))
+	// One pass is noisy on a shared CI machine (a single slow key failed the
+	// build on macOS). Each key's cost is the fastest of three passes of the
+	// same sequence, each on a fresh model: a scheduler stall cannot make all
+	// three slow, while a real slowdown makes every pass slow.
+	keys := []string{"p", "d", "d", "t", "esc", "[", "]", "4", "down", "enter", "esc", "s"}
+	const limit = 400 * time.Millisecond
+	best := map[string]time.Duration{}
+	for pass := 0; pass < 3; pass++ {
+		m := &model_{cfg: Config{Prices: pt, Theme: render.Theme{Color: true}, Loc: time.UTC, Detect: map[string]providers.Detection{}, Providers: []providers.Provider{providers.Claude{}, providers.Codex{}}},
+			res: res, events: evs, idx: idx, per: periodState{preset: presetIndex("all")}}
+		m.applyPeriod()
+		resize(m, 150, 46)
 		_ = m.View()
-		if el := time.Since(start); el > 400*time.Millisecond {
-			t.Errorf("key %q took %v on 200k events", k, el)
+		for _, k := range keys {
+			start := time.Now()
+			press(m, k)
+			_ = m.View()
+			if el := time.Since(start); best[k] == 0 || el < best[k] {
+				best[k] = el
+			}
+		}
+	}
+	for _, k := range keys {
+		if best[k] > limit {
+			t.Errorf("key %q took at least %v on 200k events (fastest of three passes; limit %v)", k, best[k], limit)
 		}
 	}
 }

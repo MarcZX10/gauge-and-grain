@@ -32,8 +32,8 @@ Usage that never reaches a local log (web chat UIs, other machines, deleted logs
   and Qwen record only a hashed or sanitised id.
 - **Which model served a request** when a tool records it only per task: Roo, Kilo and Zoo attribute a whole task
   to the last model used in it.
-- **Tool calls** are only counted from Claude Code transcripts. Codex records its tool calls too, but gg does not read
-  them yet, so the Tools view does not include Codex or any other tool.
+- **Tool calls** are counted from Claude Code and Codex transcripts. The other tools are not read for tool calls yet:
+  their logs were not available to check the format against, so the Tools view leaves them out rather than guess.
 
 ## Cost
 
