@@ -58,7 +58,7 @@ Filters (report, tui, export):
   --days N        last N days including today (default 30)
   --from DATE     start date YYYY-MM-DD (local time)     --to DATE   end date, inclusive
   --all           whole history
-  --provider ID   claude | codex   (repeatable, or comma separated)
+  --provider ID   claude codex gemini qwen pi cline roo kilo zoo (repeatable, or comma separated)
   --model TEXT    model name contains TEXT (repeatable)
   --project TEXT  project path contains TEXT (repeatable)
 
@@ -227,7 +227,7 @@ func selected(o *opts) ([]providers.Provider, error) {
 	for _, id := range o.prov {
 		p := providers.ByID(strings.ToLower(id))
 		if p == nil {
-			return nil, fmt.Errorf("unknown provider %q (known: claude, codex, gemini)", id)
+			return nil, fmt.Errorf("unknown provider %q (known: "+strings.Join(providerIDs(), ", ")+")", id)
 		}
 		if p.ParserVersion() == 0 {
 			return nil, fmt.Errorf("provider %q is detected but not supported yet; see `gg sources`", id)
@@ -431,12 +431,12 @@ func cmdSources(o *opts) error {
 		if d.Status == providers.Unsupported || d.Status == providers.NoData {
 			mark = t.Warn(mark)
 		}
-		fmt.Printf("  %s %s %s\n", t.Pad(p.Name(), 14), t.Pad(mark, 12), d.Detail)
+		fmt.Printf("  %s %s %s\n", t.Pad(p.Name(), 18), t.Pad(mark, 12), d.Detail)
 		for _, dir := range d.Dirs {
-			fmt.Printf("  %s %s\n", t.Pad("", 14), t.Dim(dir))
+			fmt.Printf("  %s %s\n", t.Pad("", 18), t.Dim(dir))
 		}
 		if d.Files > 0 {
-			fmt.Printf("  %s %s\n", t.Pad("", 14), t.Dim(fmt.Sprintf("%s files", render.Num(d.Files))))
+			fmt.Printf("  %s %s\n", t.Pad("", 18), t.Dim(fmt.Sprintf("%s files", render.Num(d.Files))))
 		}
 	}
 	fmt.Println()
@@ -510,6 +510,14 @@ func unpricedReport(o *opts, pt *pricing.Table, t render.Theme) error {
 
 // utf8Locale is false only when the locale explicitly names a non-UTF-8
 // charset (e.g. LANG=C). Unknown or unset is treated as UTF-8-capable.
+func providerIDs() []string {
+	var ids []string
+	for _, p := range providers.All() {
+		ids = append(ids, p.ID())
+	}
+	return ids
+}
+
 func utf8Locale() bool {
 	for _, v := range []string{"LC_ALL", "LC_CTYPE", "LANG"} {
 		if l := os.Getenv(v); l != "" {

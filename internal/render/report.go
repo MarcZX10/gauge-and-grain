@@ -27,7 +27,14 @@ type Ctx struct {
 	Filters   string // human description of non-date filters
 }
 
-var provOrder = []string{"claude", "codex", "gemini"}
+// provOrder is every known provider id in display order.
+var provOrder = func() []string {
+	var ids []string
+	for _, p := range providers.All() {
+		ids = append(ids, p.ID())
+	}
+	return ids
+}()
 
 func provName(id string) string {
 	if p := providers.ByID(id); p != nil {
@@ -113,6 +120,7 @@ func Overview(t Theme, c *Ctx, width int) []string {
 	row("Sessions", Num(len(tot.Sessions)), t.Dim(fmt.Sprintf("%s API calls (de-duplicated)", Num(tot.Events))))
 
 	var srcs []string
+	missing := 0
 	for _, id := range provOrder {
 		d, ok := c.Detect[id]
 		if !ok {
@@ -126,8 +134,11 @@ func Overview(t Theme, c *Ctx, width int) []string {
 		case d.Status == providers.Ready:
 			srcs = append(srcs, t.Dim(provName(id)+" (no usage in range)"))
 		default:
-			srcs = append(srcs, t.Dim(provName(id)+" (not found)"))
+			missing++
 		}
+	}
+	if missing > 0 {
+		srcs = append(srcs, t.Dim(fmt.Sprintf("%d other %s not found", missing, noun(missing, "tool"))))
 	}
 	row("Sources", strings.Join(srcs, " · "), "")
 	return out
@@ -374,6 +385,11 @@ func NoteItems(c *Ctx) []Note {
 	for _, id := range provOrder {
 		if d, ok := c.Detect[id]; ok && d.Status == providers.Unsupported {
 			add(true, "%s: %s.", provName(id), d.Detail)
+		}
+	}
+	for _, g := range c.Sum.ByProvider { // data from parsers nobody has verified against real logs
+		if ex, ok := providers.ByID(g.Key).(providers.Experimental); ok {
+			add(true, "%s is experimental: %s. Treat its numbers as unverified.", provName(g.Key), ex.Experimental())
 		}
 	}
 	if c.Errors > 0 {

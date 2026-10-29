@@ -1013,7 +1013,9 @@ func (m *model_) prevSpan() string {
 func (m *model_) sourcesLine() string {
 	t := m.cfg.Theme
 	var parts []string
-	for _, id := range []string{"claude", "codex", "gemini"} {
+	missing := 0
+	for _, p := range providers.All() {
+		id := p.ID()
 		d, ok := m.cfg.Detect[id]
 		if !ok {
 			continue
@@ -1028,8 +1030,11 @@ func (m *model_) sourcesLine() string {
 		case d.Status == providers.Ready:
 			parts = append(parts, t.Dim("○ "+name+" (no usage in range)"))
 		default:
-			parts = append(parts, t.Dim("○ "+name+" not found"))
+			missing++
 		}
+	}
+	if missing > 0 {
+		parts = append(parts, t.Dim(fmt.Sprintf("○ %d other tools not found", missing)))
 	}
 	return t.Dim("Sources ") + strings.Join(parts, "   ")
 }
@@ -1189,7 +1194,8 @@ func (m *model_) notesLines() []string {
 
 	// sources
 	var sl []string
-	for _, id := range []string{"claude", "codex", "gemini"} {
+	for _, p := range providers.All() {
+		id := p.ID()
 		d, ok := m.cfg.Detect[id]
 		if !ok {
 			continue

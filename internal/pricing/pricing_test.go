@@ -99,3 +99,20 @@ func TestEmbeddedTableIsSane(t *testing.T) {
 		}
 	}
 }
+
+func TestGeminiModelsAreMatchedMostSpecificFirst(t *testing.T) {
+	tb, _ := Load("")
+	for in, want := range map[string]string{
+		"gemini-2.5-flash":              "gemini-2.5-flash",
+		"gemini-2.5-flash-lite":         "gemini-2.5-flash-lite",
+		"gemini-2.5-flash-lite-preview": "gemini-2.5-flash-lite",
+		"gemini-2.5-pro":                "gemini-2.5-pro",
+	} {
+		if p := tb.Lookup(in); p == nil || p.ID != want {
+			t.Errorf("%s → %v, want %s", in, p, want)
+		}
+	}
+	if tb.Lookup("qwen3-coder-plus") != nil {
+		t.Error("Qwen prices are tiered by region and not listed for qwen3-coder-plus: it must stay unpriced")
+	}
+}

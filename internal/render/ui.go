@@ -33,6 +33,24 @@ func ProviderColor(id string) int {
 		return 111
 	case "gemini":
 		return 141
+	case "qwen":
+		return 135
+	case "cline":
+		return 79
+	case "roo":
+		return 208
+	case "kilo":
+		return 220
+	case "zoo":
+		return 114
+	case "pi":
+		return 175
+	case "deepseek":
+		return 69
+	case "opencode":
+		return 183
+	case "kilocli":
+		return 227
 	}
 	return CAccent
 }

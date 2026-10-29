@@ -15,6 +15,7 @@ import (
 func gg(t *testing.T, bin, home string, args ...string) (string, error) {
 	cmd := exec.Command(bin, args...)
 	cmd.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR="+filepath.Join(home, "claude"), "CODEX_HOME="+filepath.Join(home, "codex"),
+		"GEMINI_HOME="+filepath.Join(home, "gemini"), "QWEN_HOME="+filepath.Join(home, "qwen"), "PI_HOME="+filepath.Join(home, "pi"), "GG_VSCODE_USER_DIRS="+filepath.Join(home, "vscode", "User"), "OPENCODE_HOME="+filepath.Join(home, "opencode"), "KILO_HOME="+filepath.Join(home, "kilo"), "DSH_HOME="+filepath.Join(home, "dsh"),
 		"GG_CACHE_DIR="+filepath.Join(home, "cache"), "GG_CONFIG_DIR="+filepath.Join(home, "cfg"), "NO_COLOR=1", "COLUMNS=100", "LANG=C.UTF-8")
 	out, err := cmd.CombinedOutput()
 	return string(out), err
@@ -83,7 +84,7 @@ func TestCLI(t *testing.T) {
 		t.Errorf("date filter leaked September:\n%s", out)
 	}
 
-	for _, bad := range [][]string{{"report", "--provider", "nope"}, {"report", "--from", "2026-13-40"}, {"report", "--days", "0"}, {"frobnicate"}, {"report", "--provider", "gemini"}, {"export", "--format", "xml"}} {
+	for _, bad := range [][]string{{"report", "--provider", "nope"}, {"report", "--from", "2026-13-40"}, {"report", "--days", "0"}, {"frobnicate"}, {"export", "--format", "xml"}} {
 		if out, err := gg(t, bin, home, bad...); err == nil || !strings.Contains(out, "gg:") {
 			t.Errorf("%v should fail with a clear message, got err=%v out=%q", bad, err, out)
 		}
@@ -118,5 +119,72 @@ func TestEmptyHomeExplainsInsteadOfFailing(t *testing.T) {
 	out, err := gg(t, bin, t.TempDir(), "report")
 	if err != nil || !strings.Contains(out, "not found") || !strings.Contains(out, "Tokens") {
 		t.Errorf("empty machine: %v\n%s", err, out)
+	}
+}
+
+func TestOtherToolsEndToEnd(t *testing.T) {
+	bin, home := setup(t)
+	cp := func(from, to string) {
+		err := filepath.WalkDir(filepath.Join("..", "..", "testdata", from), func(p string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return err
+			}
+			rel, _ := filepath.Rel(filepath.Join("..", "..", "testdata", from), p)
+			b, _ := os.ReadFile(p)
+			dst := filepath.Join(home, to, rel)
+			os.MkdirAll(filepath.Dir(dst), 0o755)
+			return os.WriteFile(dst, b, 0o644)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	cp("gemini", "gemini")
+	cp("qwen", "qwen")
+	cp("pi", "pi")
+	cp("vscode", "vscode")
+	cp("opencode", "opencode")
+
+	out, err := gg(t, bin, home, "export", "--all", "--format", "json", "--provider", "gemini,qwen,pi,cline,roo,kilo,zoo,opencode")
+	if err != nil {
+		t.Fatal(err, out)
+	}
+	var doc struct {
+		Total struct {
+			Tokens int64 `json:"total_tokens"`
+		} `json:"total"`
+		ByProvider []struct {
+			Key    string `json:"key"`
+			Tokens int64  `json:"total_tokens"`
+		} `json:"by_provider"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	want := map[string]int64{"gemini": 1680 + 365, "qwen": 1185, "pi": 5660, "cline": 660, "roo": 105, "kilo": 25, "zoo": 2, "opencode": 12}
+	got := map[string]int64{}
+	for _, p := range doc.ByProvider {
+		got[p.Key] = p.Tokens
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s: %d tokens, want %d", k, got[k], v)
+		}
+	}
+
+	out, _ = gg(t, bin, home, "notes", "--all")
+	out = strings.Join(strings.Fields(out), " ")
+	for _, who := range []string{"Gemini CLI is experimental", "Qwen Code is experimental", "Pi Agent is experimental", "Cline is experimental", "OpenCode is experimental"} {
+		if !strings.Contains(out, who) {
+			t.Errorf("notes must flag %q:\n%s", who, out)
+		}
+	}
+	// a second run is served from the cache for whole-document files too
+	out, _ = gg(t, bin, home, "report", "--all", "--provider", "cline", "--notes")
+	if !strings.Contains(out, "claude-sonnet-5-5") {
+		t.Errorf("cline report:\n%s", out)
+	}
+	if out, err := gg(t, bin, home, "sources"); err != nil || !strings.Contains(out, "Gemini CLI") || !strings.Contains(out, "experimental") {
+		t.Errorf("sources should say experimental: %v\n%s", err, out)
 	}
 }

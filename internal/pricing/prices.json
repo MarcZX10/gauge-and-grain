@@ -16,6 +16,13 @@
       "url": "https://developers.openai.com/api/docs/pricing",
       "updated": "2026-10-29",
       "note": "Retrieved through a page summariser; check the URL before relying on exact figures. Batch, Flex, Fast and long-context rates are not modelled."
+    },
+    {
+      "id": "google",
+      "name": "Gemini API pricing (standard tier)",
+      "url": "https://ai.google.dev/gemini-api/docs/pricing",
+      "updated": "2026-10-29",
+      "note": "Retrieved through a page summariser; verify against the URL. Prompts over 200K tokens are billed at higher rates for some models and are NOT modelled, so cost is a lower bound for them. Several models have announced price increases (gemini-4-argon on 2026-12-01; gemini-3.6/3.8-flash on 2027-01-01); the current prices are listed. Cache storage fees are not modelled."
     }
   ],
   "models": [
@@ -49,6 +56,16 @@
     {"id": "gpt-6-sol",          "source": "openai", "input": 2.00,  "output": 10.00, "cache_read": 0.20},
     {"id": "gpt-6-luna",         "source": "openai", "input": 0.10,  "output": 0.50,  "cache_read": 0.01},
     {"id": "gpt-6.1-sol",        "source": "openai", "input": 2.00,  "output": 10.00, "cache_read": 0.10},
-    {"id": "gpt-6.1-terra",      "source": "openai", "input": 1.00,  "output": 5.00,  "cache_read": 0.05}
+    {"id": "gpt-6.1-terra",      "source": "openai", "input": 1.00,  "output": 5.00,  "cache_read": 0.05},
+    {"id": "gemini-4-argon",        "source": "google", "input": 2.00,  "output": 10.00, "cache_read": 0.10,  "note": "price rises on 2026-12-01"},
+    {"id": "gemini-3.8-flash",      "source": "google", "input": 0.75,  "output": 3.75,  "cache_read": 0.075, "note": "price rises on 2027-01-01"},
+    {"id": "gemini-3.6-flash",      "source": "google", "input": 0.75,  "output": 3.75,  "cache_read": 0.075, "note": "price rises on 2027-01-01"},
+    {"id": "gemini-3.1-pro-preview","source": "google", "input": 2.00,  "output": 12.00, "cache_read": 0.20,  "note": "prompts over 200K cost more; not modelled"},
+    {"id": "gemini-3.5-flash-lite", "source": "google", "input": 0.30,  "output": 2.50,  "cache_read": 0.03},
+    {"id": "gemini-3.1-flash-lite", "source": "google", "input": 0.25,  "output": 1.50,  "cache_read": 0.025},
+    {"id": "gemini-3-flash-preview","source": "google", "input": 0.50,  "output": 3.00,  "cache_read": 0.05},
+    {"id": "gemini-2.5-pro",        "source": "google", "input": 1.25,  "output": 10.00, "cache_read": 0.125, "note": "prompts over 200K cost more; not modelled"},
+    {"id": "gemini-2.5-flash",      "source": "google", "input": 0.30,  "output": 2.50,  "cache_read": 0.03},
+    {"id": "gemini-2.5-flash-lite", "source": "google", "input": 0.10,  "output": 0.40,  "cache_read": 0.01}
   ]
 }
