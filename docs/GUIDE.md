@@ -96,7 +96,8 @@ On the command line the equivalent is `--days`, `--from/--to` and `--all`.
 | Models | `4` | Same, with `unpriced` / `partial` flags. A model name reported by two tools shows as `gpt-5.4 (codex)` / `gpt-5.4 (opencode)`. |
 | Projects | `5` | Working directory of each session. |
 | Sessions | `6` | The heaviest sessions. |
-| Notes | `7` · `n` | Every caveat, plus sources and prices. A `⚠N` badge appears when something needs attention. |
+| Tools | `7` | Tools and skills the assistant called, from Claude Code transcripts (see below). |
+| Notes | `8` · `n` | Every caveat, plus sources and prices. A `⚠N` badge appears when something needs attention. |
 
 Providers keep one colour everywhere (Claude orange, Codex blue, Gemini purple…). **Yellow always means caution**
 (an estimate, an unpriced model, partial data). Each list has a **details panel** for the selected row: composition of
@@ -106,7 +107,7 @@ tokens, cost, cache hit share, first/last seen.
 
 | Key | Action |
 |---|---|
-| `←` `→` · `Tab` `Shift+Tab` · `h` `l` · `1`–`7` | switch view |
+| `←` `→` · `Tab` `Shift+Tab` · `h` `l` · `1`–`8` | switch view |
 | `↑` `↓` · `j` `k` · `PgUp` `PgDn` · `g` `G` | move / scroll |
 | `Enter` | **drill in**: filter everything to the selected day, provider, model (and its provider when the name is shared) or project. On Sessions, Enter says there is nothing finer. |
 | `Esc` · `Backspace` | undo the last drill-down → clear the search → back to Overview |
@@ -123,6 +124,11 @@ tokens, cost, cache hit share, first/last seen.
 Active filters appear as chips at the right of the header, so you always know why the numbers are what they are.
 On a narrow terminal the chips become a count (`2 filters`) and the status line names them. The Notes warning badge
 stays visible on a narrow terminal too.
+
+**Tools** counts the tool calls each reply made in Claude Code transcripts (for example `Bash`, `Read`, or an MCP tool such
+as `mcp__docs__guide`), and lists skills under `skill:<name>`. Each call is attributed to the reply that made it, so the
+counts follow the same period and filters as everything else. Other tools' logs do not record tool calls, so they do not
+appear there.
 
 While the first scan runs, `q` quits and `Esc` cancels the scan (finished files stay cached).
 

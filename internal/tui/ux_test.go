@@ -250,3 +250,25 @@ func TestDailyCalendarOnlyWhenThereIsRoom(t *testing.T) {
 		t.Error("a short terminal keeps the chart and table")
 	}
 }
+
+// The Tools view lists tools and skills from the transcripts, and says so when there are none.
+func TestToolsView(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	press(m, "7")
+	if !strings.Contains(m.View(), "No tool calls") {
+		t.Error("the fixture has no tool calls: the view must say so")
+	}
+	for i := range m.events {
+		m.events[i].Tools = "Bash,Read,skill:review"
+	}
+	m.idx = agg.NewIndex(m.events, m.cfg.Prices, m.cfg.Loc)
+	m.applyPeriod()
+	v := render.Strip(m.View())
+	if !strings.Contains(v, "Bash") || !strings.Contains(v, "skill:review") || !strings.Contains(v, "Skills") {
+		t.Errorf("tools and skills must be listed:\n%s", v)
+	}
+	if !strings.Contains(v, "Notes") {
+		t.Error("the tab bar keeps Notes")
+	}
+}

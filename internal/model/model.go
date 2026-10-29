@@ -1,7 +1,10 @@
 // Package model defines the provider-neutral usage record every parser emits.
 package model
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Field flags record which optional token fields the source actually
 // reported, so "0" and "not reported" are never confused.
@@ -34,6 +37,35 @@ type Event struct {
 	Output       int64
 	Reasoning    int64
 	Has          uint8
+	// Tools lists the tools this call asked for, one entry per tool use,
+	// comma separated (see ToolList). Empty when the source does not say.
+	Tools string
+}
+
+// MaxToolName bounds one tool name. Names come from logs; a longer one is
+// truncated rather than kept.
+const MaxToolName = 96
+
+// ToolList joins tool names for Event.Tools. Commas inside a name would
+// break the list, so they are replaced.
+func ToolList(names []string) string {
+	clean := make([]string, 0, len(names))
+	for _, n := range names {
+		n = Clean(n)
+		if len(n) > MaxToolName {
+			n = n[:MaxToolName]
+		}
+		clean = append(clean, strings.ReplaceAll(n, ",", ";"))
+	}
+	return strings.Join(clean, ",")
+}
+
+// ToolNames splits Event.Tools back into names.
+func ToolNames(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, ",")
 }
 
 // Total is the provider-neutral token total: every token billed or served.
@@ -54,6 +86,11 @@ func (e *Event) Merge(o *Event) {
 	}
 	if e.Model == "" || e.Model == "unknown" {
 		e.Model = o.Model
+	}
+	// A streamed message is repeated with more content each time, so the
+	// longest list of tool uses is the complete one.
+	if len(ToolNames(o.Tools)) > len(ToolNames(e.Tools)) {
+		e.Tools = o.Tools
 	}
 }
 

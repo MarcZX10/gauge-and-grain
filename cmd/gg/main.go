@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -114,8 +115,8 @@ func (o *opts) bind(fs *flag.FlagSet) {
 	fs.StringVar(&o.pricesFile, "prices", "", "")
 	fs.BoolVar(&o.daily, "daily", false, "")
 	fs.BoolVar(&o.notes, "notes", false, "")
-	fs.BoolVar(&o.compact, "compact", os.Getenv("GG_COMPACT") != "", "")
-	fs.BoolVar(&o.compact, "c", os.Getenv("GG_COMPACT") != "", "")
+	fs.BoolVar(&o.compact, "compact", envFlag("GG_COMPACT"), "")
+	fs.BoolVar(&o.compact, "c", envFlag("GG_COMPACT"), "")
 	fs.StringVar(&o.format, "format", "json", "")
 	fs.StringVar(&o.by, "by", "day", "")
 	fs.BoolVar(&o.unpriced, "unpriced", false, "")
@@ -204,12 +205,20 @@ func main() {
 		}
 		die(fmt.Errorf("%v (see `gg help`)", err))
 	}
+	daysSet, rangeSet := false, false
 	fs.Visit(func(f *flag.Flag) { // --days, --from, --to, --all: saved preferences must not override them
 		switch f.Name {
-		case "days", "from", "to", "all":
+		case "days":
+			daysSet = true
+			o.periodGiven = true
+		case "from", "to", "all":
+			rangeSet = true
 			o.periodGiven = true
 		}
 	})
+	if daysSet && rangeSet { // one period at a time: never silently ignore one of them
+		die(errors.New("--days cannot be combined with --from, --to or --all"))
+	}
 	if fs.NArg() > 0 {
 		die(fmt.Errorf("unexpected argument %q", fs.Arg(0)))
 	}
@@ -558,10 +567,31 @@ func unpricedReport(o *opts, pt *pricing.Table, t render.Theme) error {
 	if len(seen) == 0 {
 		say("  none")
 	}
-	for m, n := range seen {
-		sayf("  %s %s\n", t.Pad(m, 36), render.Tokens(n))
+	keys := make([]string, 0, len(seen)) // most tokens first, then by name: the same order every run
+	for k := range seen {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if seen[keys[i]] != seen[keys[j]] {
+			return seen[keys[i]] > seen[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	for _, k := range keys {
+		sayf("  %s %s\n", t.Pad(k, 36), render.Tokens(seen[k]))
+	}
+	if res.Cancelled {
+		say(t.Warn("  PARTIAL: the scan was cancelled, so this list may be incomplete."))
+		os.Exit(130)
 	}
 	return nil
+}
+
+// envFlag reads a boolean environment setting: unset, empty, "0" and "false"
+// are off, anything else is on.
+func envFlag(name string) bool {
+	v := strings.TrimSpace(os.Getenv(name))
+	return v != "" && v != "0" && !strings.EqualFold(v, "false")
 }
 
 // utf8Locale is false only when the locale explicitly names a non-UTF-8

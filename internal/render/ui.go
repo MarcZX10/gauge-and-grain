@@ -275,8 +275,9 @@ func (t Theme) Stacked(parts []Part, w int) string {
 		used++
 	}
 	var sb strings.Builder
+	shades := []string{"█", "▓", "▒", "░"} // distinct without colour, too
 	for i, p := range parts {
-		ch := "█"
+		ch := shades[i%4]
 		if t.ASCII {
 			ch = string("#=+-"[i%4])
 		}

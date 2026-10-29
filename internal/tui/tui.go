@@ -66,13 +66,14 @@ const (
 	tabModels
 	tabProjects
 	tabSessions
+	tabTools
 	tabNotes
 	numTabs
 )
 
-var tabNames = [numTabs]string{"Overview", "Daily", "Providers", "Models", "Projects", "Sessions", "Notes"}
-var tabShort = [numTabs]string{"Ovw", "Day", "Prv", "Mdl", "Prj", "Ses", "Nts"}
-var tabLabel = [numTabs]string{"", "Day", "Provider", "Model", "Project", "Session", ""}
+var tabNames = [numTabs]string{"Overview", "Daily", "Providers", "Models", "Projects", "Sessions", "Tools", "Notes"}
+var tabShort = [numTabs]string{"Ovw", "Day", "Prv", "Mdl", "Prj", "Ses", "Tls", "Nts"}
+var tabLabel = [numTabs]string{"", "Day", "Provider", "Model", "Project", "Session", "", ""}
 
 type sortBy int
 
@@ -381,7 +382,7 @@ func (m *model_) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.tab = (m.tab + 1) % numTabs
 	case "shift+tab", "left", "h":
 		m.tab = (m.tab + numTabs - 1) % numTabs
-	case "1", "2", "3", "4", "5", "6", "7":
+	case "1", "2", "3", "4", "5", "6", "7", "8":
 		m.tab = int(s[0] - '1')
 	case "o":
 		m.tab = tabOverview
@@ -1123,9 +1124,12 @@ func (m *model_) scrollLines() []string {
 	if c.lines != nil && c.ver == m.ver && c.w == m.width {
 		return c.lines
 	}
-	if m.tab == tabNotes {
+	switch m.tab {
+	case tabNotes:
 		c.lines = m.notesLines()
-	} else {
+	case tabTools:
+		c.lines = m.toolsLines()
+	default:
 		c.lines = m.overviewLines()
 	}
 	c.ver, c.w = m.ver, m.width
@@ -1571,11 +1575,8 @@ func (m *model_) tableView() []string {
 	m.offset[m.tab] = off
 	for i := off; i < min(len(rows), off+g.vis); i++ {
 		r := strings.TrimPrefix(rows[i], "  ")
-		if i == m.cursor[m.tab] {
-			r = t.Select(r, tw-4)
-			if !t.Color {
-				r = ">" + strings.TrimPrefix(render.Strip(r), " ")
-			}
+		if i == m.cursor[m.tab] { // a marker as well as the background, so it reads without colour
+			r = t.Select(t.FG(render.CAccent, "›")+" "+r, tw-4)
 		}
 		inner = append(inner, r)
 	}
@@ -1640,7 +1641,7 @@ func (m *model_) footer() []string {
 		return []string{t.Dim(m.status()), t.Pad(prompt+t.Dim("   Enter apply · Esc cancel · matches model, project or session"), W)}
 	}
 	type hint struct{ key, what string }
-	all := []hint{{"←→", "view"}, {"↑↓", "move"}, {"⏎", "drill"}, {"esc", "back"}, {"t", "period"}, {"[ ]", "shift"}, {"p", "provider"}, {"/", "search"}, {"s", "sort"}, {"m", "compact"}, {"n", "notes"}, {"?", "help"}, {"q", "quit"}}
+	all := []hint{{"←→", "view"}, {"↑↓", "move"}, {"⏎", "drill"}, {"esc", "back"}, {"t", "period"}, {"[ ]", "shift"}, {"p", "provider"}, {"c", "clear"}, {"/", "search"}, {"s", "sort"}, {"m", "compact"}, {"e", "export"}, {"n", "notes"}, {"?", "help"}, {"q", "quit"}}
 	if !m.isTable() {
 		all[1].what, all[2] = "scroll", hint{"r", "rescan"}
 	}
@@ -1692,7 +1693,7 @@ func (m *model_) status() string {
 func (m *model_) helpView() []string {
 	t, W := m.cfg.Theme, m.width
 	rows := [][2]string{
-		{"← → · Tab · 1-7 · o · n", "switch view (o Overview, n Notes)"},
+		{"← → · Tab · 1-8 · o · n", "switch view (o Overview, n Notes)"},
 		{"↑ ↓ · j k · PgUp PgDn · g G", "move, or scroll the Overview and Notes"},
 		{"Enter · click a selected row", "drill into the day, provider, model or project"},
 		{"Esc · Backspace", "undo the last drill-down, then the search, then go to Overview"},
@@ -1882,4 +1883,48 @@ func heatGlyph(v, peak int64) string {
 		return "▒"
 	}
 	return "░"
+}
+
+// toolsLines is the Tools view: which tools and skills the assistant called
+// in the period. Only Claude Code transcripts record tool calls.
+func (m *model_) toolsLines() []string {
+	t, W := m.cfg.Theme, m.width
+	out := []string{""}
+	var total int64
+	var tools, skills []agg.ToolStat
+	for _, s := range m.sum.Tools {
+		total += s.Uses
+		if strings.HasPrefix(s.Name, "skill:") {
+			skills = append(skills, s)
+		} else {
+			tools = append(tools, s)
+		}
+	}
+	if total == 0 {
+		return append(out,
+			"  "+t.Dim("No tool calls in this period."),
+			"",
+			"  "+t.Dim("Claude Code transcripts record which tools and skills each reply used. The logs gg reads"),
+			"  "+t.Dim("for other tools do not record tool calls, so their totals are not in this view."))
+	}
+	nameW := max(12, min(40, W-34))
+	section := func(title string, list []agg.ToolStat) {
+		out = append(out, "  "+t.Bold(title))
+		for _, s := range list {
+			share := float64(s.Uses) / float64(total)
+			name := s.Name
+			out = append(out, "  "+t.Pad(name, nameW)+" "+t.PadL(render.Num(int(s.Uses)), 8)+"  "+
+				t.ColBar(share, max(4, min(24, W-nameW-22)), render.CAccent)+" "+t.PadL(render.Pct(share), 6))
+		}
+		out = append(out, "")
+	}
+	out = append(out, "  "+t.Bold(fmt.Sprintf("%s tool uses", render.Num(int(total))))+t.Dim(" in "+m.rangeNm),
+		"  "+t.Dim("Claude Code only. A skill is counted under skill:<name>; shares are of all uses."), "")
+	if len(tools) > 0 {
+		section("Tools", tools)
+	}
+	if len(skills) > 0 {
+		section("Skills", skills)
+	}
+	return out
 }
