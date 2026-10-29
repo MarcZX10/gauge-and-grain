@@ -1,0 +1,93 @@
+# Architecture
+
+**Language: Go.** One static binary per platform (no runtime to install), fast streaming JSON
+parsing, trivial cross-compilation to Linux/macOS/Windows on amd64/arm64, and the same ecosystem as
+`goccc`. The only third-party code is Bubble Tea (TUI event loop), `go-runewidth`, `go-isatty`, and
+`x/term`/`x/sys`.
+
+```
+cmd/gg            CLI: flags, commands, progress meter
+internal/model    Event: one billed API call, provider-neutral
+internal/providers  one adapter per tool: Detect, Files, NewParser
+internal/scan     parallel scan, incremental cache, global de-duplication, cancellation
+internal/pricing  embedded + user price tables, model matching, cost
+internal/agg      filters, groupings, previous-period comparison, coverage
+internal/render   report sections, tables, JSON/CSV export (shared by the TUI)
+internal/tui      Bubble Tea interface
+```
+
+## Data flow
+
+```
+files ──► Provider.NewParser ──► []Event per file ──► cache (gob, per file)
+                                                         │
+all files' events ──► global de-dup (Key) ──► agg.Summarize(filter) ──► render / tui / export
+```
+
+### Events and token semantics
+`Event` normalises every provider to: **Input** (uncached), **CacheRead**, **CacheWrite**
+(+ the 1-hour subset), **Output** (including reasoning), and **Reasoning** (informational subset).
+`Has` flags record which optional fields the source actually reported, so exports and reports can say
+*n/a* instead of `0`.
+
+### Parsing untrusted logs
+- A cheap byte pre-filter skips lines that cannot contain usage before JSON decoding (most of a Codex
+  log), so multi-GB histories parse at disk speed.
+- Anything that fails to decode or has the wrong shape is **counted as malformed and skipped**, never
+  summed. Negative or absurd (> 1e12) counters become 0 and are counted as anomalies.
+- Lines over 64 MB are skipped and counted (`oversized`), not buffered.
+- A fuzz test (`FuzzParsersNeverPanic`) feeds arbitrary bytes to both parsers.
+
+### Incremental cache
+One gob file per source file, keyed by path hash. An entry is reused only if the cache schema and
+`Provider.ParserVersion()` match **and** the file's size and mtime are unchanged. Bump
+`ParserVersion()` whenever a parser's output could change — that is the cache-invalidation contract.
+
+For **append-only logs** that merely grew (your live session), the entry also stores the byte offset
+of the last complete line, fingerprints of the file head and of the bytes just before the offset, and
+the parser's resumable state. If the fingerprints still match, only the new tail is parsed; otherwise
+the file is re-parsed from the start. A final line without a newline is left unconsumed while the
+file is still being written (so a half-written record is never counted or marked malformed), and is
+accepted once the file has been idle for two minutes. Cache writes are atomic (temp file + rename), a
+corrupt entry is simply re-parsed, and a cancelled scan leaves finished files cached.
+
+### De-duplication
+Each event has a `Key` (`claude:<message.id>:<requestId>`, `codex:resp:<response_id>`, …). Keys are
+merged within a file (streamed chunks: counters take the max) and **across files** (resumed sessions,
+archived copies). The global pass uses a 64-bit hash of the key (collision odds ≈ 1e-7 at 5M events),
+interns repeated strings and drops the keys to keep memory flat.
+
+### Cancellation and progress
+`scan.Run(ctx, …)` takes a context; workers stop between and inside files (the reader checks the
+context). The CLI shows a one-line meter on stderr when it is a terminal (stdout stays clean for
+pipes); the TUI shows a progress bar and `Esc` cancels. A cancelled scan returns what it has,
+flagged `Cancelled`, and every view says the totals are partial.
+
+### Limits
+There are **no event caps**: every event is kept so totals are exact. The cost is memory (~180 bytes
+per call: 1M calls ≈ 180 MB retained) and the warm-start time to decode the cache (~2 s per million
+calls). If that becomes a problem the next step is pre-aggregating cached entries by day/model/project;
+it is not done because it would complicate drill-down filters.
+
+## Adding a provider
+
+1. Create `internal/providers/<name>.go` implementing `Provider`:
+   - `Detect()` — say honestly if the directory is missing, empty, or found-but-unparseable.
+   - `Files()` — list the log files.
+   - `NewParser(path, resume)` — return a `Parser` with `Line`, `Result`, `State`.
+     Emit events with a stable `Key`, set `Has` flags only for fields the source really reports,
+     use `clamp()` for counters, and count bad records in `ParseStats`.
+   - `ParserVersion()` — start at 1; bump on every behavioural change.
+2. Register it in `providers.All()`.
+3. Add prices for its models in `internal/pricing/prices.json` with a source URL and date.
+4. Add **fixtures taken from real (sanitised) logs** to `testdata/<name>/` and tests with
+   hand-derived expected totals, including duplicates and malformed lines.
+5. Document the data location, assumptions and limitations in [PROVIDERS.md](PROVIDERS.md).
+
+A provider whose format cannot be verified should stay detection-only (see `Gemini`).
+
+## Release
+
+Tag `vX.Y.Z` → `.github/workflows/release.yml` runs the tests and GoReleaser, publishing
+`gg_<os>_<arch>.tar.gz` / `.zip` and `checksums.txt`. `scripts/install.sh` and `scripts/install.ps1`
+download the latest release and verify the checksum.

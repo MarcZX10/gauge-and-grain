@@ -1,0 +1,9 @@
+{
+  "sources": [
+    {"id": "me", "name": "My negotiated rates", "url": "https://example.com/contract", "updated": "2026-10-29", "note": "enterprise discount applied"}
+  ],
+  "models": [
+    {"id": "codex-auto-review", "source": "me", "input": 1.75, "output": 14.00, "cache_read": 0.175},
+    {"id": "gpt-5.4", "source": "me", "input": 2.00, "output": 12.00}
+  ]
+}
