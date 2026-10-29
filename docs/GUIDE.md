@@ -82,6 +82,8 @@ Period  Today │ 7d │ [30d] │ 90d │ All │ Pick…   30 Sep – 29 Oct 2
 
 On the command line the equivalent is `--days`, `--from/--to` and `--all`.
 
+<p align="center"><img src="img/period.png" alt="The period picker" width="760"></p>
+
 ## The dashboard (TUI)
 
 `gg` opens a dashboard with seven views:
@@ -145,6 +147,9 @@ top provider claude 82%  ·  model claude-sonnet-5-5 56%  ·  project dev/websho
 | `gg report --compact` · `-c` | prints just these lines |
 | `GG_COMPACT=1` | makes compact the default for both |
 
+<p align="center"><img src="img/compact.png" alt="Compact mode in the dashboard" width="760"></p>
+<p align="center"><img src="img/cli-compact.png" alt="gg report --compact" width="760"></p>
+
 ## The report
 
 `gg report` prints the same data without a UI: headline numbers, token mix, a daily trend, and the top providers,
@@ -158,6 +163,8 @@ They are generated from what is actually in your totals: the "estimate, not a bi
 **experimental** providers whose data is included, tools found but not parsed, unreadable files, a cancelled (partial)
 scan, per-provider fields that are not always reported, malformed/duplicate record counts, and the source and date of
 every price. Warnings come first.
+
+<p align="center"><img src="img/notes.png" alt="The Notes view" width="900"></p>
 
 ## Configuration
 
@@ -181,6 +188,8 @@ paths in use.
 - The dashboard needs at least **40×8**; below that it asks for a bigger window instead of drawing garbage. As the
   terminal narrows it drops columns, shortens tab names, hides the details panel and finally shows one tab at a time.
   Resizing is live.
+
+<p align="center"><img src="img/narrow.png" alt="The dashboard in a 62-column terminal" width="420"></p>
 
 ## Cancelling and the cache
 

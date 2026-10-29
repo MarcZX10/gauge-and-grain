@@ -33,22 +33,22 @@ gg notes                    # how far to trust the numbers
 
 ## A quick tour
 
+**Daily** — the selected (or hovered) day lights up in the chart; click a bar to drill into that day.
+
+<p align="center"><img src="docs/img/daily.png" alt="Daily view" width="900"></p>
+
+**Models, projects, sessions** — ranked, with a details panel for the selected row.
+
+<p align="center"><img src="docs/img/models.png" alt="Models view with details panel" width="900"></p>
+
 <table>
 <tr>
-<td width="50%"><img src="docs/img/daily.png" alt="Daily view"><br><sub><b>Daily</b> — the selected or hovered day lights up in the chart.</sub></td>
-<td width="50%"><img src="docs/img/models.png" alt="Models view with details panel"><br><sub><b>Models, projects, sessions</b> — ranked, with a details panel.</sub></td>
-</tr>
-<tr>
-<td><img src="docs/img/period.png" alt="Period picker"><br><sub><b>Periods</b> — presets, <code>2026-10</code>, <code>14d</code>, ranges; <code>[</code> <code>]</code> move through time.</sub></td>
-<td><img src="docs/img/notes.png" alt="Notes view"><br><sub><b>Notes</b> — every caveat in one place: estimates, unpriced models, sources, prices.</sub></td>
-</tr>
-<tr>
-<td><img src="docs/img/compact.png" alt="Compact summary"><br><sub><b>Compact</b> — press <code>m</code>: just what matters.</sub></td>
-<td><img src="docs/img/narrow.png" alt="Narrow terminal" width="60%"><br><sub><b>Any terminal size</b> — it adapts down to 40×8.</sub></td>
+<td width="50%"><img src="docs/img/period.png" alt="Period picker"><br><sub><b>Periods</b> — presets, <code>2026-10</code>, <code>14d</code>, ranges; <code>[</code> <code>]</code> move through time.</sub></td>
+<td width="50%"><img src="docs/img/compact.png" alt="Compact summary"><br><sub><b>Compact</b> — press <code>m</code>: only what matters.</sub></td>
 </tr>
 </table>
 
-<p align="center"><img src="docs/img/cli-compact.png" alt="gg report --compact" width="760"></p>
+More: the **Notes** view (every caveat in one place), narrow terminals and the report are in the [user guide](docs/GUIDE.md).
 
 ## Supported tools
 

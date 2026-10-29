@@ -33,7 +33,7 @@ shot() {
   echo "  $OUT/$name.png"
 }
 
-shot overview   130 40 "gg"                   "tui --days 30"
+shot overview   130 36 "gg"                   "tui --days 30"
 shot daily      130 40 "gg · Daily"           "tui --days 30" 2 "Down Down Down Down Down Down Down Down Down Down Down Down Down Down Down Down Down Down Down Down Down Down"
 shot models     130 22 "gg · Models"          "tui --days 30" 4 Down
 shot notes      120 44 "gg · Notes"           "tui --days 30" n
