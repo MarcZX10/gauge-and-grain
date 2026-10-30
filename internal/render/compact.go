@@ -37,8 +37,10 @@ func Compact(t Theme, c *Ctx, width int) []string {
 	default:
 		cost = t.FG(CGood, t.Bold(Cost(tot.Cost))) + t.Dim(" est.")
 		if s.Prev != nil {
-			if ch, ok := agg.Change(tot.Cost, s.Prev.Cost); ok {
+			if ch, ok := agg.Change(tot.Cost, s.Prev.Cost); ok && s.Prev.Complete() {
 				cost += " " + t.Arrow(ch)
+			} else if !s.Prev.Complete() {
+				cost += " " + t.Dim("vs prev n/a")
 			}
 		}
 	}
