@@ -25,6 +25,7 @@ import (
 	"github.com/MarcZX10/gauge-and-grain/internal/providers"
 	"github.com/MarcZX10/gauge-and-grain/internal/render"
 	"github.com/MarcZX10/gauge-and-grain/internal/scan"
+	_ "github.com/MarcZX10/gauge-and-grain/internal/termfix"
 	"github.com/MarcZX10/gauge-and-grain/internal/tui"
 )
 
