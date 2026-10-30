@@ -15,8 +15,8 @@ as a compact report or an interactive terminal dashboard. Run it with <code>gg</
 ## Install
 
 ```sh
-curl -fsSL https://github.com/MarcZX10/gauge-and-grain/releases/latest/download/install.sh | sh   # Linux / macOS
-irm https://github.com/MarcZX10/gauge-and-grain/releases/latest/download/install.ps1 | iex          # Windows
+curl -fsSL https://raw.githubusercontent.com/MarcZX10/gauge-and-grain/main/scripts/install.sh | sh   # Linux / macOS
+irm https://raw.githubusercontent.com/MarcZX10/gauge-and-grain/main/scripts/install.ps1 | iex          # Windows
 go install github.com/MarcZX10/gauge-and-grain/cmd/gg@latest                                           # any OS with Go 1.26+
 ```
 
