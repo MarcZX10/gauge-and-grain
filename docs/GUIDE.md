@@ -116,9 +116,9 @@ tokens, cost, cache hit share, first/last seen.
 | `/` | search model, project or session text (`Enter` applies, `Esc` cancels) |
 | `s` | sort by tokens or by estimated cost (applies to Providers, Models, Projects and Sessions) |
 | `m` | toggle [compact mode](#compact-mode) |
-| `e` | export the current view to a CSV file, `gg-<view>-<time>.csv`, in the folder you started `gg` from |
+| `e` | export the table you are on (Daily to Sessions) to a CSV file, `gg-<table>-<time>.csv`, in the folder you started `gg` from. Overview, Notes and Tools have no table: `e` writes nothing there. |
 | `c` | clear every filter, including the ones given on the command line |
-| `r` | rescan now (unchanged files are not re-read) |
+| `r` · `R` | rescan now (unchanged files are not re-read). `Esc` stops a rescan that runs in the background. |
 | `?` | help · `q` or `Ctrl-C` quit (`q` also quits from the help screen) |
 
 Active filters appear as chips at the right of the header, so you always know why the numbers are what they are.
