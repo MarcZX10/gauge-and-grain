@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/MarcZX10/gauge-and-grain/internal/model"
 )
@@ -186,5 +187,65 @@ func TestOpenCodeSkipsHugeRowsAndStopsRunawayQueries(t *testing.T) {
 	}
 	if find(evs, "big") != nil || st.Oversized != 1 || len(evs) != 2 {
 		t.Errorf("an oversized row must be skipped and counted: oversized=%d evs=%+v", st.Oversized, evs)
+	}
+}
+
+// A read error part way through a table must fail the database, not leave the
+// rows read so far as its totals: the scan would cache those as complete. Here
+// the bad row is in part, after two good step-finish rows, so the error comes
+// from inside the loop.
+func TestOpenCodeReadErrorMidTableIsAnError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode.db")
+	db := makeOpenCodeDB(t, path)
+	if _, err := db.Exec(`INSERT INTO part VALUES ('pt9','m3','not json')`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if _, _, err := opencodeFamily[0].ParsePath(context.Background(), path); err == nil {
+		t.Error("a read error in the step-finish loop must be returned, not swallowed")
+	}
+}
+
+// A copy left behind by a crash is removed once it is a day old; a fresh copy,
+// and anything not named as a copy, stays.
+func TestOpenCodeStaleCopiesAreRemoved(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	old := time.Now().Add(-48 * time.Hour)
+	for _, d := range []string{"gg-sqlite-old", "other-old"} {
+		if err := os.MkdirAll(filepath.Join(tmp, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(filepath.Join(tmp, d), old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(tmp, "gg-sqlite-new"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	removeStaleCopies(time.Now())
+	got := dirNames(t, tmp)
+	if strings.Join(got, ",") != "gg-sqlite-new,other-old" {
+		t.Errorf("after the sweep: %v", got)
+	}
+}
+
+// A database that does not fit the copy limit is an error, not a truncated copy.
+func TestOpenCodeCopyOverLimitIsAnError(t *testing.T) {
+	saved := maxDBCopy
+	defer func() { maxDBCopy = saved }()
+	maxDBCopy = 10
+	dir := t.TempDir()
+	if err := writeFile(filepath.Join(dir, "src"), strings.Repeat("x", 10)); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyFile(filepath.Join(dir, "src"), filepath.Join(dir, "at-limit")); err != nil {
+		t.Errorf("a file at the limit must copy: %v", err)
+	}
+	if err := writeFile(filepath.Join(dir, "big"), strings.Repeat("x", 11)); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyFile(filepath.Join(dir, "big"), filepath.Join(dir, "copy")); err == nil {
+		t.Error("a file over the limit must be an error")
 	}
 }

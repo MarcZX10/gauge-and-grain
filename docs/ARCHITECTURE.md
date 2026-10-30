@@ -52,7 +52,7 @@ accepted once the file has been idle for two minutes. Cache writes are atomic (t
 corrupt entry is simply re-parsed, and a cancelled scan leaves finished files cached.
 
 ### De-duplication
-Each event has a `Key` (`claude:<message.id>:<requestId>`, `codex:resp:<response_id>`, …). Keys are
+Each event has a `Key` (`claude:<message.id>`, `codex:resp:<response_id>`, …). Keys are
 merged within a file (streamed chunks: counters take the max) and **across files** (resumed sessions,
 archived copies). The global pass uses a 64-bit hash of the key (collision odds ≈ 1e-7 at 5M events),
 interns repeated strings and drops the keys to keep memory flat.

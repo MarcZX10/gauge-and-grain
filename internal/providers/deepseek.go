@@ -35,7 +35,7 @@ type DeepSeek struct{}
 
 func (DeepSeek) ID() string         { return "deepseek" }
 func (DeepSeek) Name() string       { return "DeepSeek Harness" }
-func (DeepSeek) ParserVersion() int { return 1 }
+func (DeepSeek) ParserVersion() int { return 2 } // 2: output clamped once
 func (DeepSeek) Experimental() string {
 	return "parser follows DeepSeek Harness's session format as documented by third-party readers; not verified against real logs"
 }
@@ -152,10 +152,11 @@ func (DeepSeek) ParsePath(ctx context.Context, path string) ([]model.Event, mode
 				mdl = s.Model
 			}
 			u := ev.Data.Usage
+			out := clamp(val(u.Output), &st) // once: each clamp call counts an anomaly
 			reasoning := clamp(val(u.Reasoning), &st)
 			e := model.Event{Provider: "deepseek", Model: mdl, Session: session, Project: project, Time: time.UnixMilli(ev.Time).UTC(),
-				Key: "deepseek:" + id, Input: clamp(val(u.Input), &st), Output: clamp(val(u.Output), &st),
-				CacheRead: clamp(val(u.CacheRead), &st), CacheWrite: clamp(val(u.CacheWrite), &st), Reasoning: min(reasoning, clamp(val(u.Output), &st))}
+				Key: "deepseek:" + id, Input: clamp(val(u.Input), &st), Output: out,
+				CacheRead: clamp(val(u.CacheRead), &st), CacheWrite: clamp(val(u.CacheWrite), &st), Reasoning: min(reasoning, out)}
 			if u.CacheRead != nil {
 				e.Has |= model.HasCacheRead
 			}

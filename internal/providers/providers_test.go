@@ -43,9 +43,9 @@ func TestClaudeDedupesStreamedChunksAndKeepsLargestCounters(t *testing.T) {
 	var m1, m2 *model.Event
 	for i := range evs {
 		switch evs[i].Key {
-		case "claude:msg_1:req_1":
+		case "claude:msg_1":
 			m1 = &evs[i]
-		case "claude:msg_2:req_2":
+		case "claude:msg_2":
 			m2 = &evs[i]
 		}
 	}
@@ -82,6 +82,23 @@ func TestClaudeClampsHostileCounters(t *testing.T) {
 	e := byModel(evs, "claude-opus-5-5")
 	if e == nil || e.Input != 0 || e.CacheRead != 0 || e.Output != 7 {
 		t.Fatalf("negative/absurd counters must become 0 without touching others: %+v", e)
+	}
+}
+
+// One API call written as two lines, only one of them carrying requestId, is
+// still one call: the key is the message id alone.
+func TestClaudeSameMessageIDWithAndWithoutRequestIDCountsOnce(t *testing.T) {
+	usage := `"usage":{"input_tokens":2,"output_tokens":%d}`
+	lines := []string{
+		`{"type":"assistant","sessionId":"s","requestId":"r1","timestamp":"2026-10-03T00:00:00Z","message":{"id":"m1","model":"claude-opus-5-5",` + fmt.Sprintf(usage, 50) + `}}`,
+		`{"type":"assistant","sessionId":"s","timestamp":"2026-10-03T00:00:01Z","message":{"id":"m1","model":"claude-opus-5-5",` + fmt.Sprintf(usage, 60) + `}}`,
+	}
+	evs, _, err := ParseAll(Claude{}, "/x/s.jsonl", strings.NewReader(strings.Join(lines, "\n")+"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || evs[0].Input != 2 || evs[0].Output != 60 {
+		t.Fatalf("one call must be one event with the largest counters, got %+v", evs)
 	}
 }
 

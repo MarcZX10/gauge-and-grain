@@ -15,7 +15,7 @@ import (
 // Assumptions (see docs/PROVIDERS.md):
 //   - Only "assistant" records with message.usage are billed calls.
 //   - Claude Code writes one record per content block, repeating the same
-//     message.id + requestId and the same usage; we count each call once and
+//     message.id and the same usage; we count each call once and
 //     keep the largest counter seen.
 //   - input_tokens excludes cache; cache_creation_input_tokens and
 //     cache_read_input_tokens are separate. thinking_tokens is a subset of
@@ -26,7 +26,7 @@ type Claude struct{}
 
 func (Claude) ID() string         { return "claude" }
 func (Claude) Name() string       { return "Claude Code" }
-func (Claude) ParserVersion() int { return 3 } // 3: tool uses, one per id
+func (Claude) ParserVersion() int { return 4 } // 4: key on message id only; 3: tool uses, one per id
 func (Claude) Fields() Fields {
 	return Fields{CacheRead: true, CacheWrite: true, Reasoning: true,
 		Note: "reasoning shown only when the log carries thinking_tokens"}
@@ -205,9 +205,8 @@ func (p *claudeParser) Line(line []byte) {
 		e.Has |= model.HasReasoning
 	}
 	switch {
-	case m.ID != "" && l.RequestID != "":
-		e.Key = "claude:" + m.ID + ":" + l.RequestID
 	case m.ID != "":
+		// requestId is left out: some lines of one call lack it.
 		e.Key = "claude:" + m.ID
 	case l.UUID != "":
 		e.Key = "claude:uuid:" + l.UUID
