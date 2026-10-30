@@ -70,6 +70,7 @@ Other:
   --prices FILE   extra/override prices (default: <config dir>/prices.json)
   --daily         (report) add a per-day table
   --notes         (report) append the full notes
+  --watch         (tui) refresh changed data every minute in the background
   -c, --compact   tiny summary: the headline numbers only (report; the TUI starts compact; env GG_COMPACT=1)
 
 Everything is read from local files; nothing is sent anywhere.
@@ -96,6 +97,7 @@ type opts struct {
 	pricesFile              string
 	periodGiven             bool // a period flag was passed explicitly
 	daily, notes, compact   bool
+	watch                   bool
 	format, by              string
 	unpriced                bool
 }
@@ -117,15 +119,19 @@ func (o *opts) bind(fs *flag.FlagSet) {
 	fs.BoolVar(&o.notes, "notes", false, "")
 	fs.BoolVar(&o.compact, "compact", envFlag("GG_COMPACT"), "")
 	fs.BoolVar(&o.compact, "c", envFlag("GG_COMPACT"), "")
+	fs.BoolVar(&o.watch, "watch", false, "")
 	fs.StringVar(&o.format, "format", "json", "")
 	fs.StringVar(&o.by, "by", "day", "")
 	fs.BoolVar(&o.unpriced, "unpriced", false, "")
 	fs.Usage = func() { fmt.Fprintf(os.Stderr, usage, version) }
 }
 
-// refreshInterval is how often the dashboard rescans in the background.
-// GG_REFRESH sets it in seconds; 0 turns it off. The default is a minute.
-func refreshInterval() time.Duration {
+// watchInterval keeps the dashboard static by default. When --watch is set,
+// unchanged sources are served from the incremental cache once a minute.
+func watchInterval(enabled bool) time.Duration {
+	if !enabled {
+		return 0
+	}
 	if v := os.Getenv("GG_REFRESH"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			return time.Duration(n) * time.Second
@@ -414,7 +420,7 @@ func run(cmd string, o *opts) error {
 			Providers: provs, Detect: detect, Prices: pt, CacheDir: cd, Filter: f, RangeName: rangeName,
 			Theme: theme(o, os.Stdout), Loc: now.Location(), DaysFlag: o.days, All: o.all,
 			Bounded: o.from == "" && o.to == "", Compact: o.compact,
-			Explicit: o.periodGiven, Refresh: refreshInterval(), Prefs: prefsFile(),
+			Explicit: o.periodGiven, Refresh: watchInterval(o.watch), Prefs: prefsFile(),
 		})
 	}
 

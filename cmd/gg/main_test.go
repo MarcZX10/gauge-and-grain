@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // gg builds the binary once and runs it against fixture homes, so the whole
@@ -122,6 +123,24 @@ func TestCLI(t *testing.T) {
 	}
 	if out, err := gg(t, bin, home, "cache", "clear"); err != nil || !strings.Contains(out, "removed") {
 		t.Errorf("cache clear: %v %s", err, out)
+	}
+}
+
+func TestWatchIntervalIsOptIn(t *testing.T) {
+	t.Setenv("GG_REFRESH", "")
+	if got := watchInterval(false); got != 0 {
+		t.Fatalf("automatic refresh must be off by default, got %s", got)
+	}
+	if got := watchInterval(true); got != 60*time.Second {
+		t.Fatalf("watch default interval = %s, want 1m", got)
+	}
+	t.Setenv("GG_REFRESH", "15")
+	if got := watchInterval(true); got != 15*time.Second {
+		t.Fatalf("configured interval = %s, want 15s", got)
+	}
+	t.Setenv("GG_REFRESH", "0")
+	if got := watchInterval(true); got != 0 {
+		t.Fatalf("zero interval = %s, want disabled", got)
 	}
 }
 

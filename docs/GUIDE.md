@@ -131,8 +131,10 @@ counts follow the same period and filters as everything else. The other tools ar
 
 While the first scan runs, `q` quits and `Esc` cancels the scan (finished files stay cached).
 
-The dashboard rescans in the background every minute (`GG_REFRESH=<seconds>` changes that; `0` turns it off). The
-view keeps its place, and the status line shows `updating…` and the time of the last update.
+The dashboard is static after its initial scan by default. Start it with `gg --watch` (or `gg tui --watch`) to
+rescan in the background every minute; `GG_REFRESH=<seconds>` changes the interval, and `0` disables automatic
+rescans. The incremental cache keeps unchanged files out of each rescan. The view keeps its place, and the status
+line shows `updating…` and the time of the last update. Press `r` for a manual rescan at any time.
 
 ### Mouse
 
@@ -193,7 +195,7 @@ every price. Warnings come first.
 | Cache | `<cache dir>/gauge-and-grain/`; `--no-cache` ignores it; `gg cache clear` deletes it |
 | Where tools keep their data | `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_HOME`, `QWEN_HOME`, `PI_HOME`, `OPENCODE_HOME`, `KILO_HOME`, `DSH_HOME`, `XDG_DATA_HOME`; `GG_VSCODE_USER_DIRS` (developer and test override) replaces the editor search for Cline/Roo/Kilo/Zoo — see [PROVIDERS.md](PROVIDERS.md) |
 | Dashboard memory | `<config dir>/gauge-and-grain/tui.json` keeps the sort, the view, the period preset and compact mode between runs. A period given on the command line always wins. Delete the file to forget them. |
-| Background rescan | `GG_REFRESH=<seconds>` (default `60`, `0` turns it off) |
+| Background rescan | `--watch` enables it (default off); interval defaults to `60` seconds and can be set with `GG_REFRESH=<seconds>` (`0` disables it) |
 | Compact by default | `GG_COMPACT=1` |
 | Test/dev overrides | `GG_CONFIG_DIR`, `GG_CACHE_DIR` |
 
