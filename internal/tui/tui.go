@@ -1580,14 +1580,20 @@ func (m *model_) tableView() []string {
 
 	total := m.sum.Total.Tokens()
 	tw := g.tableW
+	// Reserve a stable two-column gutter for the selection marker on every
+	// row. The data columns keep the same positions as the cursor moves, and
+	// fixed-width fields such as the share bar remain intact.
 	hdr, rows := render.TableRowsOpt(t, gs, total, tw-4, tabLabel[m.tab], true, m.tab == tabDaily)
-	inner := []string{strings.TrimPrefix(hdr, "  ")}
+	inner := []string{"  " + strings.TrimPrefix(hdr, "  ")}
 	off := min(m.offset[m.tab], max(0, len(rows)-g.vis))
 	m.offset[m.tab] = off
 	for i := off; i < min(len(rows), off+g.vis); i++ {
 		r := strings.TrimPrefix(rows[i], "  ")
 		if i == m.cursor[m.tab] { // a marker as well as the background, so it reads without colour
-			r = t.Select(t.FG(render.CAccent, "›")+" "+r, tw-4)
+			r = t.FG(render.CAccent, "›") + " " + r
+			r = t.Select(r, tw-4)
+		} else {
+			r = "  " + r
 		}
 		inner = append(inner, r)
 	}
