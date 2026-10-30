@@ -38,7 +38,9 @@ Details, assumptions and which of these are verified: [PROVIDERS.md](PROVIDERS.m
 ## What is counted, and once
 
 - **API calls** — one per billed model response. Claude Code writes the same response once per content block, and
-  resumed/forked sessions repeat earlier messages; each response is counted **once** (the largest counters win).
+  resumed/forked sessions repeat earlier messages; each response is counted **once**. Within one file, Claude and
+  Pi keep the largest counter seen, Codex and DeepSeek keep the first copy, and Gemini and Qwen keep the last. When
+  the same response is in several files, the scan merges the copies and keeps the largest counter.
 - **Codex** — newer logs give exact per-response usage (preferred); older logs only have cumulative counters, of
   which only the *increase* is used, so the turn-end re-broadcast of the same total adds nothing. Archived sessions
   are de-duplicated by response id.

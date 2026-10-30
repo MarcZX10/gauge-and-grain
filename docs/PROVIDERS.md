@@ -20,8 +20,8 @@ assumption are in `testdata/`, with expected numbers worked out by hand in the t
 **Assumptions**
 
 1. Claude Code writes **one record per content block** of the same API response, repeating
-   `message.id` + `requestId` and the usage. Each `(message.id, requestId)` is **one call**, and the
-   largest value of each counter is kept (streamed chunks only grow). Verified against a
+   `message.id` and the usage. Each `message.id` is **one call** (`requestId` is not used: some lines of
+   a call lack it), and the largest value of each counter is kept (streamed chunks only grow). Verified against a
    17.8k-call real history: totals matched an independent implementation exactly.
 2. `input_tokens` excludes cache; cache read/creation are separate fields.
 3. `thinking_tokens` is a subset of `output_tokens`.
@@ -58,8 +58,8 @@ API outside Claude Code is not in these files.
    `0` in the logs this was built against, so this is **unverified**.
 4. The model is the latest `turn_context.model` before the event; before any, it is `unknown`.
 5. The same `response_id` in several files (archived copy, forked session) is counted once.
-6. When a file has any `token_usage_record`, `token_count` events in that file are ignored (they are
-   cumulative views of the same usage).
+6. Once a file has its first `token_usage_record`, later `token_count` events in that file are ignored (they
+   are cumulative views of the same usage). Earlier ones are still counted.
 
 **Limitations:** background/auto-review models appear under their own names and may be unpriced.
 A session that was killed mid-write can end in a truncated line; it is reported as malformed.
@@ -84,6 +84,7 @@ Data location overrides: `GEMINI_HOME`, `QWEN_HOME`, `PI_HOME`, `OPENCODE_HOME`,
 
 **Data:** `~/.gemini/tmp/<project>/chats/*.json` (one session document) and `*.jsonl` (one message per
 line, or `{"$set":{"messages":[…]}}` blocks; a later recording of the same message id replaces the earlier).
+A message is keyed by session id and message id, so one session kept as both `.json` and `.jsonl` counts once.
 
 **Semantics (Google's definitions, not disjoint):** `tokens.input` is the whole prompt *including*
 `tokens.cached`; `tokens.output` *excludes* `tokens.thoughts`; `tokens.tool` is tool-use prompt;
@@ -102,7 +103,8 @@ and are normalised like Gemini CLI. The older `~/.qwen/tmp/*/chats/*.json` forma
 
 **Data:** `~/.pi/agent/sessions/<project>/*.jsonl`: `session` header (id, cwd), `model_change`
 entries and `message` entries with `usage {input, output, cacheRead, cacheWrite}` (disjoint, like
-Anthropic). Models are named `provider/model`, which price lookup strips.
+Anthropic). The model is named by its id alone (no provider prefix), so it matches Claude Code's name for the
+same model. An entry with its own `id` is counted once, whichever session header it sits under (a forked file).
 
 ### Cline, Roo Code, Kilo Code, Zoo Code (VS Code extensions)
 

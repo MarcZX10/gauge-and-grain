@@ -36,6 +36,19 @@ const dshSession = `{"type":"session","id":"ds-1","cwd":"/work/ds","seq":1}
 { not json
 `
 
+// An anomalous counter is one anomaly, not one per use of the value.
+func TestDeepSeekNegativeOutputIsCountedOnce(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "ws", "ds-2", "session.jsonl.zstd")
+	writeZstd(t, p, `{"type":"assistant/message","seq":1,"time":1790300000000,"data":{"message":{"id":"n1","source":{"kind":"model","model":"deepseek-v4-flash"}},"usage":{"inputTokens":1,"outputTokens":-7,"reasoningTokens":3}}}`+"\n")
+	evs, st, err := DeepSeek{}.ParsePath(context.Background(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || evs[0].Output != 0 || evs[0].Reasoning != 0 || st.Anomalies != 1 {
+		t.Fatalf("output clamped to 0 and counted once: events=%+v anomalies=%d", evs, st.Anomalies)
+	}
+}
+
 func TestDeepSeekZstdSession(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "ws", "ds-1", "session.jsonl.zstd")
 	writeZstd(t, p, dshSession)

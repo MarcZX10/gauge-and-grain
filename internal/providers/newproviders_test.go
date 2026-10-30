@@ -3,6 +3,7 @@ package providers
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/MarcZX10/gauge-and-grain/internal/model"
@@ -110,13 +111,61 @@ func TestPiTracksModelChangesAndSkipsOtherRoles(t *testing.T) {
 	if len(evs) != 2 || sum(evs) != 5510+150 {
 		t.Fatalf("events=%d total=%d, want 2 / 5660 (duplicate line and toolResult ignored)", len(evs), sum(evs))
 	}
-	a := find(evs, "anthropic/claude-sonnet-5-5")
+	a := find(evs, "claude-sonnet-5-5")
 	if a == nil || a.Input != 10 || a.CacheRead != 5000 || a.CacheWrite != 300 || a.Output != 200 || a.Project != "/work/alpha" || a.Session != "pi-1" {
 		t.Errorf("anthropic message: %+v", a)
 	}
-	b := find(evs, "openai/gpt-5.4")
+	b := find(evs, "gpt-5.4")
 	if b == nil || b.Has != 0 {
 		t.Errorf("model_change must apply to later messages, and absent cache fields stay unreported: %+v", b)
+	}
+}
+
+// A forked Pi file copies its entries under a new session header. An entry
+// that carries its own id is one call, whichever header it is under.
+func TestPiForkedEntryWithSameIDCountsOnce(t *testing.T) {
+	entry := `{"type":"message","id":"e1","timestamp":"2026-10-06T07:05:00.000Z","message":{"role":"assistant","timestamp":1790000300000,"usage":{"input":100,"output":50}}}`
+	lines := []string{
+		`{"type":"session","id":"pi-1","cwd":"/work/alpha","modelId":"claude-sonnet-5-5"}`,
+		entry,
+		`{"type":"session","id":"pi-2","cwd":"/work/alpha","modelId":"claude-sonnet-5-5"}`,
+		entry,
+	}
+	evs, _, err := ParseAll(Pi{}, "/x/s.jsonl", strings.NewReader(strings.Join(lines, "\n")+"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || evs[0].Input != 100 || evs[0].Output != 50 {
+		t.Fatalf("one entry must count once, got %+v", evs)
+	}
+}
+
+// Gemini CLI can leave one session both as .json and as .jsonl. The copies
+// must share a key, or the scan counts the response twice.
+func TestGeminiSameSessionInJSONAndJSONLCountsOnce(t *testing.T) {
+	msg := `{"id":"m1","type":"gemini","timestamp":"2026-10-06T07:05:00.000Z","model":"gemini-3-pro","tokens":{"input":100,"output":20,"cached":10,"thoughts":5}}`
+	dirA, dirB := filepath.Join(t.TempDir(), "tmp", "p", "chats"), filepath.Join(t.TempDir(), "tmp", "p", "chats")
+	for _, f := range []struct{ dir, name, body string }{
+		{dirA, "session-1.json", `{"messages":[` + msg + `]}`},
+		{dirB, "session-1.jsonl", msg + "\n"},
+	} {
+		if err := os.MkdirAll(f.dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(f.dir, f.name), []byte(f.body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, _, err := ParseFile(Gemini{}, filepath.Join(dirA, "session-1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _, err := ParseFile(Gemini{}, filepath.Join(dirB, "session-1.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(a) != 1 || len(b) != 1 || a[0].Key != b[0].Key {
+		t.Fatalf("the same message in both files must share a key: %+v / %+v", a, b)
 	}
 }
 

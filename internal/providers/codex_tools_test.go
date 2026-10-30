@@ -78,3 +78,38 @@ func TestCodexToolCallsInLegacyCounts(t *testing.T) {
 		t.Errorf("the call goes with the first count it precedes: %+v", evs)
 	}
 }
+
+// A call item is read as a call even when its arguments mention the words
+// the usage lines are matched by; the usage totals do not change.
+func TestCodexCallArgumentsDoNotRouteToUsage(t *testing.T) {
+	lines := []string{
+		`{"timestamp":"2026-10-03T00:00:00Z","type":"turn_context","payload":{"model":"gpt-5.4","cwd":"/w/a"}}`,
+		`{"timestamp":"2026-10-03T00:00:01Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"cmd\":\"grep -rn token_count .\"}","call_id":"c9"}}`,
+		`{"timestamp":"2026-10-03T00:00:02Z","type":"token_usage_record","payload":{"response_id":"r1","usage":{"input_tokens":10,"output_tokens":5}}}`,
+	}
+	evs, _, err := ParseAll(Codex{}, "/x/s.jsonl", strings.NewReader(strings.Join(lines, "\n")+"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || evs[0].Tools != "c9=shell" || evs[0].Input != 10 || evs[0].Output != 5 {
+		t.Fatalf("want one reply with the shell call and 10/5 tokens, got %+v", evs)
+	}
+}
+
+// A local shell call is a tool use named local_shell, like the other calls
+// that Codex writes without a name of their own.
+func TestCodexLocalShellCallIsCounted(t *testing.T) {
+	lines := []string{
+		`{"timestamp":"2026-10-03T00:00:00Z","type":"turn_context","payload":{"model":"gpt-5.4","cwd":"/w/a"}}`,
+		`{"timestamp":"2026-10-03T00:00:01Z","type":"response_item","payload":{"type":"local_shell_call","status":"completed","call_id":"l1","action":{"type":"exec","command":["ls"]}}}`,
+		`{"timestamp":"2026-10-03T00:00:02Z","type":"response_item","payload":{"type":"local_shell_call","status":"completed","action":{"type":"exec"}}}`,
+		`{"timestamp":"2026-10-03T00:00:03Z","type":"token_usage_record","payload":{"response_id":"r1","usage":{"input_tokens":10,"output_tokens":5}}}`,
+	}
+	evs, _, err := ParseAll(Codex{}, "/x/s.jsonl", strings.NewReader(strings.Join(lines, "\n")+"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || evs[0].Tools != "l1=local_shell" {
+		t.Fatalf("want l1=local_shell (the call without id is skipped), got %+v", evs)
+	}
+}
