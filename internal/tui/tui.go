@@ -92,6 +92,7 @@ type model_ struct {
 	frame     int
 	cancel    context.CancelFunc
 	ch        chan tea.Msg
+	seq       int // numbers the scans; see scanMsg
 	prog      scan.Progress
 	res       *scan.Result
 	events    []model.Event
@@ -108,6 +109,8 @@ type model_ struct {
 	pickIn  string
 	pickErr string
 	provIdx int // 0 = all
+	// prevIdx holds the provIdx before each provider drill, restored by back.
+	prevIdx []int
 	drill   []string
 	compact bool
 	idx     *agg.Index
@@ -139,9 +142,12 @@ type progressMsg scan.Progress
 type doneMsg *scan.Result
 type tickMsg time.Time
 type refreshMsg struct{}
-type startedMsg struct {
-	ch     chan tea.Msg
-	cancel context.CancelFunc
+
+// scanMsg tags a message from a scan with its sequence number, so the
+// messages of a scan that was replaced are ignored.
+type scanMsg struct {
+	seq int
+	msg tea.Msg
 }
 
 // Run starts the TUI and blocks until the user quits.
@@ -214,9 +220,15 @@ func (m *model_) savePrefs() {
 	if os.MkdirAll(filepath.Dir(m.cfg.Prefs), 0o700) != nil {
 		return
 	}
-	tmp := m.cfg.Prefs + ".tmp"
-	if os.WriteFile(tmp, append(b, '\n'), 0o600) == nil {
-		os.Rename(tmp, m.cfg.Prefs)
+	// A temp file of its own: a fixed name could be a leftover, or a symlink
+	// planted to make the write land elsewhere.
+	f, err := os.CreateTemp(filepath.Dir(m.cfg.Prefs), filepath.Base(m.cfg.Prefs)+".*.tmp")
+	if err != nil {
+		return
+	}
+	_, werr := f.Write(append(b, '\n'))
+	if cerr := f.Close(); werr != nil || cerr != nil || os.Rename(f.Name(), m.cfg.Prefs) != nil {
+		os.Remove(f.Name())
 	}
 }
 
@@ -238,24 +250,31 @@ func tick() tea.Cmd {
 // startScan scans in the background. With allowStale, files whose cache is
 // from an older parser but unchanged are served as they are (see
 // scan.Options.AllowStale), so the dashboard can show data at once.
+// A scan still running is cancelled first: only one scan feeds the view.
 func (m *model_) startScan(allowStale bool) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithCancel(context.Background())
-		ch := make(chan tea.Msg, 64)
-		go func() {
-			res := scan.Run(ctx, scan.Options{Providers: m.cfg.Providers, CacheDir: m.cfg.CacheDir, AllowStale: allowStale, Progress: func(p scan.Progress) {
-				select { // never block the scan on a slow UI
-				case ch <- progressMsg(p):
-				default:
-				}
-			}})
-			ch <- doneMsg(res)
-		}()
-		return startedMsg{ch, cancel}
+	if m.cancel != nil {
+		m.cancel()
 	}
+	m.seq++
+	seq := m.seq
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := make(chan tea.Msg, 64)
+	m.ch, m.cancel = ch, cancel
+	go func() {
+		res := scan.Run(ctx, scan.Options{Providers: m.cfg.Providers, CacheDir: m.cfg.CacheDir, AllowStale: allowStale, Progress: func(p scan.Progress) {
+			select { // never block the scan on a slow UI
+			case ch <- progressMsg(p):
+			default:
+			}
+		}})
+		ch <- doneMsg(res)
+	}()
+	return listen(seq, ch)
 }
 
-func listen(ch chan tea.Msg) tea.Cmd { return func() tea.Msg { return <-ch } }
+func listen(seq int, ch chan tea.Msg) tea.Cmd {
+	return func() tea.Msg { return scanMsg{seq, <-ch} }
+}
 
 func (m *model_) provList() []string {
 	var out []string
@@ -263,6 +282,14 @@ func (m *model_) provList() []string {
 		out = append(out, p.ID())
 	}
 	return out
+}
+
+// resetView puts every table back at its first row. Only a change of filter,
+// period or sort calls it: a background refresh keeps the place.
+func (m *model_) resetView() {
+	for i := range m.cursor {
+		m.cursor[i], m.offset[i] = 0, 0
+	}
 }
 
 func (m *model_) recompute() {
@@ -279,9 +306,6 @@ func (m *model_) recompute() {
 			sort.SliceStable(gs, func(i, j int) bool { return gs[i].Cost > gs[j].Cost })
 		}
 	}
-	for i := range m.cursor {
-		m.cursor[i], m.offset[i] = 0, 0
-	}
 	m.cx = &render.Ctx{Sum: m.sum, Detect: m.cfg.Detect, Files: m.res.Files, Stats: m.res.Stats,
 		Cached: m.res.Cached, Parsed: m.res.Parsed, Duplicate: m.res.Duplicate, Errors: len(m.res.Errors),
 		Cancelled: m.cancelled, Prices: m.cfg.Prices, RangeName: m.rangeNm, Filters: m.filterText()}
@@ -293,12 +317,15 @@ func (m *model_) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-	case startedMsg:
-		m.ch, m.cancel = msg.ch, msg.cancel
-		return m, listen(m.ch)
+		m.showCursor()
+	case scanMsg:
+		if msg.seq != m.seq { // a scan that was replaced: its leftovers are not the view
+			return m, nil
+		}
+		return m.Update(msg.msg)
 	case progressMsg:
 		m.prog = scan.Progress(msg)
-		return m, listen(m.ch)
+		return m, listen(m.seq, m.ch)
 	case tickMsg:
 		if m.loading {
 			m.frame++
@@ -311,6 +338,11 @@ func (m *model_) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshing = true
 		return m, tea.Batch(m.startScan(true), m.refreshLater())
 	case doneMsg:
+		if res := (*scan.Result)(msg); res.Cancelled && m.refreshing && !m.loading {
+			// A cancelled refresh is partial: the last complete view stays.
+			m.refreshing = false
+			return m, nil
+		}
 		m.res = (*scan.Result)(msg)
 		m.events = m.res.Events
 		m.cancelled = m.res.Cancelled
@@ -320,7 +352,7 @@ func (m *model_) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scanTook = time.Since(m.started)
 		m.idx = agg.NewIndex(m.events, m.cfg.Prices, m.cfg.Loc)
 		m.applyPeriod()
-		if m.res.Stale > 0 && !m.freshQueued {
+		if m.res.Stale > 0 && !m.freshQueued && !m.res.Cancelled {
 			// The usage above is from the previous parser's cache. Read the
 			// changed-parser files again in the background, once per session.
 			m.freshQueued, m.refreshing = true, true
@@ -363,6 +395,7 @@ func (m *model_) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "enter":
 			m.search = false
 			m.filter.Text = m.input
+			m.resetView()
 			m.recompute()
 		case "esc":
 			m.search, m.input = false, m.filter.Text
@@ -371,8 +404,8 @@ func (m *model_) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.input = string(r[:len(r)-1])
 			}
 		default:
-			if k.Type == tea.KeyRunes {
-				m.input += string(k.Runes)
+			if k.Type == tea.KeyRunes || k.Type == tea.KeySpace {
+				m.input += typed(k)
 			}
 		}
 		return m, nil
@@ -382,6 +415,12 @@ func (m *model_) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		m.help = false
+		return m, nil
+	}
+	if s == "esc" && m.refreshing { // Esc stops a background refresh; the view stays
+		if m.cancel != nil {
+			m.cancel()
+		}
 		return m, nil
 	}
 	switch s {
@@ -437,9 +476,11 @@ func (m *model_) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "p":
 		m.filter.Providers = nil // the command-line provider filter gives way to the cycle
 		m.provIdx = (m.provIdx + 1) % (len(m.provList()) + 1)
+		m.resetView()
 		m.recompute()
 	case "s":
 		m.sort = 1 - m.sort
+		m.resetView()
 		m.recompute()
 		if m.tab == tabDaily || m.tab == tabOverview {
 			m.note = "sorting applies to Providers, Models, Projects and Sessions"
@@ -451,6 +492,8 @@ func (m *model_) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.filter.ModelsExact, m.filter.ProjectsExact = nil, nil
 		m.filter.Providers = nil
 		m.provIdx = 0
+		m.prevIdx = nil
+		m.resetView()
 		m.applyPeriod()
 	case "r", "R":
 		m.loading, m.cancelled, m.prog, m.started = true, false, scan.Progress{}, time.Now()
@@ -557,6 +600,21 @@ func (m *model_) chartDayAt(x, y int) int {
 	return -1
 }
 
+// showCursor keeps the cursor's row among the visible rows of the table. A
+// resize, or a shorter list, can leave the cursor below the window, where
+// Enter would drill into a row nobody sees.
+func (m *model_) showCursor() {
+	if !m.isTable() {
+		return
+	}
+	n := len(m.groups())
+	cur := min(m.cursor[m.tab], max(0, n-1))
+	vis := m.geometry().vis
+	off := min(m.offset[m.tab], max(0, n-vis))
+	off = min(max(off, cur-vis+1), cur)
+	m.cursor[m.tab], m.offset[m.tab] = cur, off
+}
+
 // selectRow moves the cursor of the current table and keeps it in view.
 func (m *model_) selectRow(c int) {
 	n := len(m.groups())
@@ -654,9 +712,12 @@ func (m *model_) back() {
 		last := m.drill[len(m.drill)-1]
 		m.drill = m.drill[:len(m.drill)-1]
 		kind, _, _ := strings.Cut(last, ":")
+		m.resetView()
 		switch kind {
-		case "provider":
-			m.provIdx = 0
+		case "provider": // back to the provider the view showed before the drill
+			if n := len(m.prevIdx); n > 0 {
+				m.provIdx, m.prevIdx = m.prevIdx[n-1], m.prevIdx[:n-1]
+			}
 		case "model":
 			m.filter.ModelsExact = nil
 		case "project":
@@ -670,6 +731,7 @@ func (m *model_) back() {
 	}
 	if m.filter.Text != "" {
 		m.filter.Text = ""
+		m.resetView()
 		m.recompute()
 		return
 	}
@@ -702,12 +764,39 @@ func (m *model_) cycleChip(d int) {
 	m.setPeriod(periodState{preset: chips[(cur+d+len(chips))%len(chips)]})
 }
 
+// setPeriod chooses a period by hand. That ends a day drill: only a refresh keeps it.
 func (m *model_) setPeriod(p periodState) {
 	m.per = p
+	m.dropDay()
+	m.resetView()
 	m.applyPeriod()
 }
 
-// applyPeriod turns the selected period into a filter and recomputes.
+// dropDay removes the day drill, if any. The other drill entries stay.
+func (m *model_) dropDay() {
+	var keep []string
+	for _, v := range m.drill {
+		if !strings.HasPrefix(v, "day:") {
+			keep = append(keep, v)
+		}
+	}
+	m.drill = keep
+}
+
+// setDay narrows the filter to one day, named by its key, and compares it
+// with the day before (the whole period's window no longer applies).
+func (m *model_) setDay(key string) bool {
+	d, err := time.ParseInLocation("2006-01-02", key, m.cfg.Loc)
+	if err != nil {
+		return false
+	}
+	m.filter.From, m.filter.To, m.rangeNm = d, d.AddDate(0, 0, 1), key
+	m.filter.PrevFrom, m.filter.PrevTo = time.Time{}, time.Time{}
+	return true
+}
+
+// applyPeriod turns the selected period into a filter and recomputes. A day
+// drill, if any, stays in force: a refresh must not lose it.
 func (m *model_) applyPeriod() {
 	now := time.Now().In(m.cfg.Loc)
 	m.filter.From, m.filter.To = m.per.window(now, m.cfg.Loc)
@@ -720,13 +809,11 @@ func (m *model_) applyPeriod() {
 			m.rangeNm += " · " + spanText(a, b.AddDate(0, 0, 1), m.cfg.Loc)
 		}
 	}
-	var keep []string
 	for _, v := range m.drill {
-		if !strings.HasPrefix(v, "day:") {
-			keep = append(keep, v)
+		if day, ok := strings.CutPrefix(v, "day:"); ok {
+			m.setDay(day)
 		}
 	}
-	m.drill = keep
 	m.recompute()
 }
 
@@ -778,14 +865,20 @@ func (m *model_) pickerKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.pickErr = ""
 	default:
 		if k.Type == tea.KeyRunes || k.Type == tea.KeySpace {
-			m.pickIn += string(k.Runes)
-			if k.Type == tea.KeySpace {
-				m.pickIn += " "
-			}
+			m.pickIn += typed(k)
 			m.pickErr = ""
 		}
 	}
 	return m, nil
+}
+
+// typed is the text a key types. Bubble Tea reports the space key with its
+// rune as well as its type, so it must not be added twice.
+func typed(k tea.KeyMsg) string {
+	if k.Type == tea.KeySpace {
+		return " "
+	}
+	return string(k.Runes)
 }
 
 // drillDown narrows the whole view to the selected row.
@@ -797,22 +890,13 @@ func (m *model_) drillDown() {
 	g := gs[m.cursor[m.tab]]
 	switch m.tab {
 	case tabDaily:
-		d, err := time.ParseInLocation("2006-01-02", g.Key, m.cfg.Loc)
-		if err != nil {
+		if !m.setDay(g.Key) {
 			return
 		}
-		m.filter.From, m.filter.To, m.rangeNm = d, d.AddDate(0, 0, 1), g.Key
-		// One day is compared with the day before it, not with the whole
-		// period the view was showing (that window no longer applies).
-		m.filter.PrevFrom, m.filter.PrevTo = time.Time{}, time.Time{}
-		var keep []string
-		for _, v := range m.drill {
-			if !strings.HasPrefix(v, "day:") {
-				keep = append(keep, v)
-			}
-		}
-		m.drill = append(keep, "day:"+g.Key)
+		m.dropDay()
+		m.drill = append(m.drill, "day:"+g.Key)
 	case tabProviders:
+		m.prevIdx = append(m.prevIdx, m.provIdx)
 		for i, id := range m.provList() {
 			if id == g.Key {
 				m.provIdx = i + 1
@@ -825,6 +909,7 @@ func (m *model_) drillDown() {
 			name = mdl
 		}
 		if len(g.Providers) == 1 && strings.HasSuffix(g.Label, ")") && name != g.Label {
+			m.prevIdx = append(m.prevIdx, m.provIdx)
 			for i, id := range m.provList() { // the same name under another provider is a different row
 				for p := range g.Providers {
 					if id == p {
@@ -844,6 +929,7 @@ func (m *model_) drillDown() {
 		return
 	}
 	m.tab = tabOverview
+	m.resetView()
 	m.recompute()
 }
 
@@ -1016,7 +1102,7 @@ func (m *model_) headerLayout() (string, []chipSpan) {
 	case !onChip:
 		chip(m.per.name(), true, pickerChip) // calendar or custom period
 	default:
-		chip("Pick…", false, pickerChip)
+		chip(t.Fold("Pick…"), false, pickerChip)
 	}
 	if !dayDrill {
 		if d := spanText(m.filter.From, m.filter.To, m.cfg.Loc); d != "" {
@@ -1185,8 +1271,10 @@ func (m *model_) overviewLines() []string {
 		if ch, ok := agg.Change(float64(tot.Tokens()), float64(s.Prev.Tokens())); ok {
 			tokDelta = t.Arrow(ch) + t.Dim(" vs "+m.prevSpan())
 		}
-		if ch, ok := agg.Change(tot.Cost, s.Prev.Cost); ok && tot.Complete() {
+		if ch, ok := agg.Change(tot.Cost, s.Prev.Cost); ok && tot.Complete() && s.Prev.Complete() {
 			costDelta = t.Arrow(ch) + t.Dim(" vs "+m.prevSpan()+" · estimate")
+		} else if !s.Prev.Complete() { // a partial past cost is not a baseline
+			costDelta = t.Dim("n/a vs " + m.prevSpan())
 		}
 	}
 	costVal := t.FG(render.CGood, t.Bold(render.Cost(tot.Cost)))
@@ -1196,7 +1284,7 @@ func (m *model_) overviewLines() []string {
 	case tot.PricedTok == 0:
 		costVal, costDelta = t.Warn(t.Bold("unpriced")), t.Dim("no known price for these models")
 	case !tot.Complete():
-		costVal = t.Warn(t.Bold("≥ " + render.Cost(tot.Cost)))
+		costVal = t.Warn(t.Bold(t.Fold("≥ ") + render.Cost(tot.Cost)))
 		costDelta = t.Warn(fmt.Sprintf("partial · %s unpriced", render.Tokens(tot.UnpricedTok)))
 	}
 	cacheVal, cacheNote := t.Bold("n/a"), t.Dim("not reported by these sources")
@@ -1219,7 +1307,7 @@ func (m *model_) overviewLines() []string {
 	}
 
 	// sources + notes pointer
-	out = append(out, " "+m.sourcesLine(), " "+render.NoteLine(t, c, "press n"))
+	out = append(out, " "+m.sourcesLine(), " "+t.Fold(render.NoteLine(t, c, "press n")))
 
 	if tot.Tokens() == 0 {
 		out = append(out, "", t.Dim("  No usage for these filters. Press c to clear them or d for a wider range."))
@@ -1266,7 +1354,7 @@ func (m *model_) compactLines() []string {
 	t := m.cfg.Theme
 	out := []string{""}
 	for _, l := range render.Compact(t, m.ctx(), m.width-2) {
-		out = append(out, "  "+l)
+		out = append(out, "  "+t.Fold(l))
 	}
 	return append(out, "", t.Dim("  m shows the full summary"))
 }
@@ -1383,7 +1471,7 @@ func miniRows(t render.Theme, gs []*agg.Group, total int64, w, n int) []string {
 	var out []string
 	for i, g := range gs {
 		if i >= n {
-			out = append(out, t.Dim(fmt.Sprintf("… %d more", len(gs)-n)))
+			out = append(out, t.Dim(t.Fold(fmt.Sprintf("… %d more", len(gs)-n))))
 			break
 		}
 		color, dot := render.CAccent, "  "
@@ -1426,7 +1514,7 @@ func costText(t render.Theme, g *agg.Group) string {
 	case g.PricedTok == 0:
 		return t.Warn("unpriced")
 	case !g.Complete():
-		return t.Warn("≥ " + render.Cost(g.Cost))
+		return t.Warn(t.Fold("≥ ") + render.Cost(g.Cost))
 	}
 	return render.Cost(g.Cost)
 }
@@ -1446,7 +1534,7 @@ func (m *model_) notesLines() []string {
 		if n.Warn {
 			mark = t.Warn(warn)
 		}
-		for i, l := range wrap(n.Text, max(20, inner-2)) {
+		for i, l := range wrap(t.Fold(n.Text), max(20, inner-2)) {
 			pre := "  "
 			if i == 0 {
 				pre = mark
@@ -1503,8 +1591,8 @@ func (m *model_) notesLines() []string {
 	if len(absent) > 0 {
 		sl = append(sl, "", t.Dim("not found: "+strings.Join(absent, ", ")), t.Dim("  (each can be pointed elsewhere with its *_HOME variable; see docs/PROVIDERS.md)"))
 	}
-	sl = append(sl, "", t.Dim(fmt.Sprintf("scan: %s files (%d from cache, %d parsed) → %s API calls after de-duplication, in %s",
-		render.Num(m.res.Cached+m.res.Parsed), m.res.Cached, m.res.Parsed, render.Num(len(m.events)), m.scanTook.Round(100*time.Millisecond))))
+	sl = append(sl, "", t.Dim(t.Fold(fmt.Sprintf("scan: %s files (%d from cache, %d parsed) → %s API calls after de-duplication, in %s",
+		render.Num(m.res.Cached+m.res.Parsed), m.res.Cached, m.res.Parsed, render.Num(len(m.events)), m.scanTook.Round(100*time.Millisecond)))))
 	out = append(out, t.Panel("Sources · only local files are read", sl, W, render.CAccent)...)
 
 	// prices
@@ -1583,13 +1671,17 @@ func (m *model_) tableView() []string {
 	// Reserve a stable two-column gutter for the selection marker on every
 	// row. The data columns keep the same positions as the cursor moves, and
 	// fixed-width fields such as the share bar remain intact.
-	hdr, rows := render.TableRowsOpt(t, gs, total, tw-4, tabLabel[m.tab], true, m.tab == tabDaily)
+	// Only the rows on screen are formatted: a long list would otherwise cost
+	// a full frame for every pointer move. Row widths depend on the width
+	// alone, so the window's rows line up with the header.
+	m.showCursor()
+	off := m.offset[m.tab]
+	hdr, rows := render.TableRowsOpt(t, gs[off:min(len(gs), off+g.vis)], total, tw-4, tabLabel[m.tab], true, m.tab == tabDaily)
+	hdr = t.Fold(hdr)
 	inner := []string{"  " + strings.TrimPrefix(hdr, "  ")}
-	off := min(m.offset[m.tab], max(0, len(rows)-g.vis))
-	m.offset[m.tab] = off
-	for i := off; i < min(len(rows), off+g.vis); i++ {
-		r := strings.TrimPrefix(rows[i], "  ")
-		if i == m.cursor[m.tab] { // a marker as well as the background, so it reads without colour
+	for i, row := range rows {
+		r := strings.TrimPrefix(t.Fold(row), "  ")
+		if off+i == m.cursor[m.tab] { // a marker as well as the background, so it reads without colour
 			r = t.FG(render.CAccent, "›") + " " + r
 			r = t.Select(r, tw-4)
 		} else {
@@ -1640,6 +1732,9 @@ func (m *model_) detailPanel(gs []*agg.Group, w, h int) []string {
 	}
 	g := gs[m.cursor[m.tab]]
 	lines := render.Detail(t, g, w-4)
+	for i := range lines {
+		lines[i] = t.Fold(lines[i])
+	}
 	switch m.tab {
 	case tabSessions:
 		lines = append(lines, t.Dim(g.Last.In(m.cfg.Loc).Format("2006-01-02 15:04")))
@@ -1665,8 +1760,9 @@ func (m *model_) footer() []string {
 	var parts []string
 	used := 0
 	for i, h := range all {
-		p := t.Bold(h.key) + " " + t.Dim(h.what)
-		need := render.Width(h.key) + 1 + len(h.what) + 3
+		key := t.Fold(h.key) // folded first: the ASCII key is wider
+		p := t.Bold(key) + " " + t.Dim(h.what)
+		need := render.Width(key) + 1 + len(h.what) + 3
 		mandatory := h.key == "?" || h.key == "q"
 		reserve := 0
 		if !mandatory {
@@ -1691,7 +1787,7 @@ func (m *model_) status() string {
 	if m.res != nil && m.res.Stale > 0 {
 		s += fmt.Sprintf(" · %d files updating from the previous version", m.res.Stale)
 	} else if m.refreshing {
-		s += " · updating…"
+		s += " · " + t.Fold("updating…")
 	} else if !m.updated.IsZero() {
 		s += " · updated " + m.updated.Format("15:04")
 	}
@@ -1720,15 +1816,17 @@ func (m *model_) helpView() []string {
 		{"d D · [ ] · .", "quick periods · move the period earlier or later · back to now"},
 		{"p · s · c", "cycle the provider · sort by tokens or cost · clear every filter"},
 		{"/", "search model, project or session text"},
-		{"m · e", "compact summary · export this view to a CSV file in this folder"},
-		{"r", "rescan now (unchanged files come from the cache)"},
+		{"Enter · Esc · Backspace", "in search: apply, cancel, delete a letter"},
+		{"↑ ↓ · Enter · Esc", "in the period picker: choose, type a range, close"},
+		{"m · e", "compact summary · export this table to CSV (Daily to Sessions)"},
+		{"r · R", "rescan now (unchanged files come from the cache)"},
 		{"mouse", "wheel scrolls; click tabs, periods, rows and bars; pointing previews a day"},
 		{"Shift + drag", "select and copy text (the terminal needs it while the mouse is used)"},
 		{"q · Ctrl-C", "quit (q also quits from this help)"},
 	}
 	var lines []string
 	for _, r := range rows {
-		lines = append(lines, t.Bold(t.Pad(r[0], 30))+t.Dim(r[1]))
+		lines = append(lines, t.Bold(t.Pad(t.Fold(r[0]), 30))+t.Dim(t.Fold(r[1])))
 	}
 	lines = append(lines, "", t.Dim("Any other key closes this help."))
 	w := min(W, 100)
@@ -1764,6 +1862,9 @@ func (m *model_) loadingView() string {
 		"",
 		t.Bold("Esc") + t.Dim(" cancel (finished files stay cached) · ") + t.Bold("q") + t.Dim(" quit"),
 	}
+	if len(lines)+2 > m.height { // a short terminal keeps the progress and the way out
+		lines = []string{lines[0], lines[2], lines[3], lines[len(lines)-1]}
+	}
 	box := t.Panel("gauge-and-grain", lines, w, render.CAccent)
 	var out []string
 	top := max(0, (m.height-len(box))/2)
@@ -1794,14 +1895,17 @@ func firstKey(m map[string]struct{}) string {
 	return ""
 }
 
-// exportView writes the current view to a CSV file in the working directory,
-// one row per day, provider, model, project or session, as the view groups.
+// exportView writes the current table to a CSV file in the working directory,
+// one row per day, provider, model, project or session, as the table groups.
+// The text tabs have no table to export, so they write nothing.
 func (m *model_) exportView() {
 	if m.sum == nil || m.res == nil {
 		return
 	}
-	by := "day"
+	var by string
 	switch m.tab {
+	case tabDaily:
+		by = "day"
 	case tabProviders:
 		by = "provider"
 	case tabModels:
@@ -1810,6 +1914,9 @@ func (m *model_) exportView() {
 		by = "project"
 	case tabSessions:
 		by = "session"
+	default:
+		m.note = "nothing to export on this tab: e works on the tables, Daily to Sessions"
+		return
 	}
 	name := fmt.Sprintf("gg-%s-%s.csv", by, time.Now().Format("20060102-150405"))
 	f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
@@ -1860,6 +1967,9 @@ func heatCols(days []*agg.Group, w int) []time.Time {
 // column per week, the busier the day the denser its glyph. Days outside
 // the data are left blank, and zero-use days are a dot.
 func heatmapLines(t render.Theme, days []*agg.Group, w int) []string {
+	if len(days) == 0 { // no usage in the filter: nothing to draw, and no first day
+		return nil
+	}
 	weeks := heatCols(days, w)
 	byDay := map[string]int64{}
 	var peak int64
