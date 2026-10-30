@@ -12,10 +12,12 @@ gg prices --unpriced    # + models in your history that have no price
 ## How a model is matched
 
 The model id is normalised (lower-case, provider prefix and `[1m]` suffix removed, trailing snapshot
-date removed) and matched **exactly**, or by id prefix at a `-` boundary (so
-`claude-sonnet-5-5-20261001` → `claude-sonnet-5-5`; the *longest* match wins, so `-5-5` never falls back to
-`-5`). Anything else is **unpriced**: its tokens are counted, its cost is excluded, and the report
-shows `unpriced` or `≥ $X` (a lower bound). `gg` never guesses a price from a similar-looking name.
+date removed, and for Claude ids a dot between version digits becomes a hyphen, so `claude-sonnet-4.6`
+is `claude-sonnet-4-6`). The result must match a row's id or one of its explicit `aliases` **exactly**.
+There is no prefix matching: `claude-sonnet-5-5-20261001` matches `claude-sonnet-5-5` only because the date
+is removed, and `gpt-5-nano` is not `gpt-5`. Anything else is **unpriced**: its tokens are counted, its cost
+is excluded, and the report shows `unpriced` or `≥ $X` (a lower bound). `gg` never guesses a price from a
+similar-looking name.
 
 ## How cost is computed
 
@@ -34,7 +36,7 @@ again. Not modelled: batch/flex/priority tiers, long-context surcharges, discoun
 
 | Source | Updated | Notes |
 |---|---|---|
-| Anthropic API pricing | 2026-10-06 | Cache-write multipliers from the documented convention. Where a model's cache-read price is not listed it is derived as 0.1× input and marked `derived` in `gg prices`. Haiku 5.5 uses the ≤100K-token prompt rate. |
+| Anthropic API pricing | 2026-10-06 | Cache-write multipliers from the documented convention. Where a model's cache-read price is not listed it is derived as 0.1× input and marked `*` in `gg prices`. Haiku 5.5 uses the ≤100K-token prompt rate. |
 | Gemini API pricing | 2026-10-29 | Standard tier. Retrieved through a page summariser — verify against the URL. Prompts over 200K tokens cost more for some models and are **not** modelled (cost is a lower bound there); announced price increases are noted per model. Cache storage fees are not modelled. |
 | OpenAI API pricing | 2026-10-29 | Standard tier, context ≤ 272K. **Retrieved through a page summariser** — verify against the URL before relying on exact figures. |
 
@@ -57,5 +59,11 @@ Entries replace embedded ones with the same id.
 ```
 
 Optional per-model fields: `cache_read`, `cache_write_5m`, `cache_write_1h` (USD per 1M),
-`note`. A broken override file prints a warning and is ignored; the embedded table still loads.
+`note`, `aliases` (other ids priced at this row, matched exactly) and `provider`. Set
+`"provider": "anthropic"` on an Anthropic row so its cache writes default to 1.25× and 2× input; without it
+cache writes cost nothing unless given explicitly. Negative, NaN or infinite prices and any currency other
+than `USD` are rejected.
+
+A broken override file is an error: `gg` stops and names the file, rather than silently using the embedded
+prices. A missing `--prices` file is an error for the same reason.
 See [examples/prices.json](../examples/prices.json).

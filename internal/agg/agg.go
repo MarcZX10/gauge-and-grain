@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/MarcZX10/gauge-and-grain/internal/model"
 	"github.com/MarcZX10/gauge-and-grain/internal/pricing"
@@ -40,10 +41,18 @@ func PrevWindow(from, to time.Time, loc *time.Location) (time.Time, time.Time) {
 // day that contains to (a bound inside a day includes that day, as in Filter).
 func DaysBetween(from, to time.Time, loc *time.Location) int {
 	a, b := dayNum(from, loc), dayNum(to, loc)
-	if h, m, s := to.In(loc).Clock(); h|m|s != 0 {
+	if !atDayStart(to, loc) {
 		b++
 	}
 	return int(b - a)
+}
+
+// atDayStart reports whether t is the first instant of its local day. A
+// bound given as midnight in a zone with a DST gap there normalises to 01:00,
+// so comparing clock readings would wrongly treat it as inside the day.
+func atDayStart(t time.Time, loc *time.Location) bool {
+	y, m, d := t.In(loc).Date()
+	return t.Equal(time.Date(y, m, d, 0, 0, 0, 0, loc))
 }
 
 // addDays moves t by whole calendar days in loc, keeping its wall-clock time.
@@ -351,7 +360,7 @@ func (x *Index) compile(f *Filter) cellFilter {
 	}
 	if !f.To.IsZero() {
 		cf.to, cf.hasTo = dayNum(f.To, x.loc), true
-		if h, m, s := f.To.In(x.loc).Clock(); h|m|s != 0 { // a bound inside a day includes that day
+		if !atDayStart(f.To, x.loc) { // a bound inside a day includes that day
 			cf.to++
 		}
 	}
@@ -453,7 +462,7 @@ func (x *Index) Summarize(f Filter) *Summary {
 		get(prov, c.provider, c.provider).addCell(c)
 		get(mod, c.provider+"/"+c.model, c.model).addCell(c)
 		get(proj, c.project, ProjectLabel(c.project)).addCell(c)
-		get(sess, c.sessKey, ShortID(strings.TrimPrefix(c.sessKey, c.provider+"/"))).addCell(c)
+		get(sess, c.sessKey, strings.TrimPrefix(c.sessKey, c.provider+"/")).addCell(c)
 		for name, n := range c.tools {
 			tools[name] += n
 		}
@@ -467,8 +476,9 @@ func (x *Index) Summarize(f Filter) *Summary {
 		}
 		return s.Tools[i].Name < s.Tools[j].Name
 	})
-	s.ByDay = fillDays(day, f, loc)
+	s.ByDay = fillDays(day, f, loc, time.Now())
 	s.ByProvider, s.ByModel, s.ByProject, s.BySession = sorted(prov), sorted(mod), sorted(proj), sorted(sess)
+	shortenSessions(s.BySession)
 	disambiguate(s.ByModel)
 	for _, g := range s.BySession {
 		for p := range g.Providers {
@@ -508,10 +518,13 @@ func sorted(m map[string]*Group) []*Group {
 	return out
 }
 
-// fillDays returns days in order, with zero-usage days filled in between the
-// first and last day so trends are not visually compressed.
-func fillDays(m map[string]*Group, f Filter, loc *time.Location) []*Group {
-	if len(m) == 0 {
+// fillDays returns one group per local day of the window, zero-usage days
+// included, so "N of M days active" counts the whole period. The window is
+// [From, To) clipped to today (now). A missing bound falls back to the first
+// or last day with usage.
+func fillDays(m map[string]*Group, f Filter, loc *time.Location, now time.Time) []*Group {
+	bounded := !f.From.IsZero() && !f.To.IsZero()
+	if len(m) == 0 && !bounded {
 		return nil
 	}
 	keys := make([]string, 0, len(m))
@@ -519,10 +532,22 @@ func fillDays(m map[string]*Group, f Filter, loc *time.Location) []*Group {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	first, _ := time.ParseInLocation("2006-01-02", keys[0], loc)
-	last, _ := time.ParseInLocation("2006-01-02", keys[len(keys)-1], loc)
-	if !f.From.IsZero() && f.From.In(loc).After(first) {
-		first = time.Date(f.From.In(loc).Year(), f.From.In(loc).Month(), f.From.In(loc).Day(), 0, 0, 0, 0, loc)
+	var first, last time.Time
+	if !f.From.IsZero() {
+		first = civilDay(f.From, loc)
+	} else {
+		first, _ = time.Parse("2006-01-02", keys[0])
+	}
+	if !f.To.IsZero() {
+		last = civilDay(f.To, loc)
+		if atDayStart(f.To, loc) { // To is exclusive
+			last = last.AddDate(0, 0, -1)
+		}
+		if today := civilDay(now, loc); last.After(today) {
+			last = today
+		}
+	} else {
+		last, _ = time.Parse("2006-01-02", keys[len(keys)-1])
 	}
 	var out []*Group
 	for d := first; !d.After(last); d = d.AddDate(0, 0, 1) {
@@ -534,6 +559,13 @@ func fillDays(m map[string]*Group, f Filter, loc *time.Location) []*Group {
 		}
 	}
 	return out
+}
+
+// civilDay is the calendar day of t in loc, as a UTC midnight so that
+// day arithmetic never depends on daylight-saving offsets.
+func civilDay(t time.Time, loc *time.Location) time.Time {
+	y, m, d := t.In(loc).Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 }
 
 // ProjectLabel shortens a working directory to its last two path elements.
@@ -550,12 +582,48 @@ func ProjectLabel(p string) string {
 	return strings.Join(parts[len(parts)-2:], "/")
 }
 
-// ShortID abbreviates a session id.
-func ShortID(s string) string {
-	if len(s) > 8 {
-		return s[:8]
+// shortIDLen is how much of a session id is shown by default.
+const shortIDLen = 8
+
+// ShortID abbreviates a session id to its first runes.
+func ShortID(s string) string { return truncRunes(s, shortIDLen) }
+
+// truncRunes keeps the first n runes of s without splitting one.
+func truncRunes(s string, n int) string {
+	i := 0
+	for k := 0; k < n && i < len(s); k++ {
+		_, size := utf8.DecodeRuneInString(s[i:])
+		i += size
 	}
-	return s
+	return s[:i]
+}
+
+// shortenSessions gives each session group a label that is unique within the
+// summary. A UUIDv7 starts with a timestamp, so sessions begun close together
+// share a prefix and the label grows until they differ.
+func shortenSessions(gs []*Group) {
+	raw := make([]string, len(gs))
+	maxLen := 0
+	for i, g := range gs {
+		raw[i] = g.Label
+		maxLen = max(maxLen, len(g.Label))
+	}
+	for n := shortIDLen; ; n++ {
+		labels := make([]string, len(raw))
+		seen := map[string]bool{}
+		unique := true
+		for i, r := range raw {
+			labels[i] = truncRunes(r, n)
+			unique = unique && !seen[labels[i]]
+			seen[labels[i]] = true
+		}
+		if unique || n >= maxLen { // identical full ids cannot be told apart
+			for i, g := range gs {
+				g.Label = labels[i]
+			}
+			return
+		}
+	}
 }
 
 // Change describes cur versus prev as a fraction, if comparable.
