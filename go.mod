@@ -1,6 +1,6 @@
 module github.com/MarcZX10/gauge-and-grain
 
-go 1.26.0
+go 1.26.1
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
