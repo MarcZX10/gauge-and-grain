@@ -42,11 +42,14 @@ func ReadRegular(path string, max int64) ([]byte, error) {
 	if fi.Size() > max {
 		return nil, ErrTooLarge
 	}
-	f, err := os.Open(path)
+	f, err := openNoBlock(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
+	if fst, err := f.Stat(); err != nil || !fst.Mode().IsRegular() { // replaced since the stat
+		return nil, errors.New("not a regular file")
+	}
 	b, err := io.ReadAll(io.LimitReader(f, max+1))
 	if err != nil {
 		return nil, err
