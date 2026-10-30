@@ -2,8 +2,10 @@
 
 **Language: Go.** One static binary per platform (no runtime to install), fast streaming JSON
 parsing, trivial cross-compilation to Linux/macOS/Windows on amd64/arm64, and the same ecosystem as
-`goccc`. The only third-party code is Bubble Tea (TUI event loop), `go-runewidth`, `go-isatty`, and
-`x/term`/`x/sys`.
+`goccc`. The direct third-party requirements (the `go.mod` entries without `// indirect`) are Bubble Tea (TUI event
+loop), `modernc.org/sqlite` (pure-Go SQLite driver, read-only), `klauspost/compress` (zstd), `go-runewidth`, `go-isatty`,
+`x/term` and `x/sys`. They bring in indirect modules (Lip Gloss, termenv, google/uuid and others), which `go.mod` and
+`THIRD_PARTY_NOTICES.md` list in full.
 
 ```
 cmd/gg            CLI: flags, commands, progress meter
@@ -36,7 +38,10 @@ all files' events ──► global de-dup (Key) ──► agg.Summarize(filter) 
 - Anything that fails to decode or has the wrong shape is **counted as malformed and skipped**, never
   summed. Negative or absurd (> 1e12) counters become 0 and are counted as anomalies.
 - Lines over 64 MB are skipped and counted (`oversized`), not buffered.
-- A fuzz test (`FuzzParsersNeverPanic`) feeds arbitrary bytes to both parsers.
+- A fuzz test (`FuzzParsersNeverPanic`) feeds arbitrary bytes to the line parsers, and to the whole-document parsers
+  as one document, of eleven providers: Claude, Codex, Gemini, Qwen, Pi, OpenCode, Kilo CLI, Cline, Roo Code, Kilo Code
+  and Zoo Code. DeepSeek (zstd) and the SQLite readers are not fuzzed; they have truncated-archive and corrupt-database
+  tests instead.
 
 ### Incremental cache
 One gob file per source file, keyed by path hash. An entry is reused only if the cache schema and
@@ -54,15 +59,15 @@ corrupt entry is simply re-parsed, and a cancelled scan leaves finished files ca
 ### De-duplication
 Each event has a `Key` (`claude:<message.id>:<requestId>`, `codex:resp:<response_id>`, …). Keys are
 merged within a file (streamed chunks: counters take the max) and **across files** (resumed sessions,
-archived copies). The global pass uses a 64-bit hash of the key (collision odds ≈ 1e-7 at 5M events),
+archived copies). The global pass uses a 64-bit hash of the key (collision odds ≈ 7e-7 at 5M events, the birthday bound n²/2⁶⁵),
 interns repeated strings and drops the keys to keep memory flat.
 
 ### Aggregation index
 `agg.NewIndex` folds events once into *cells* — one per (day, provider, model, project, session) — and
 prices each cell once (all events in a cell share a model, so they share a price). Every filter, period
 change or drill-down is then a pass over the cells, not over millions of events, and no regular
-expression or price lookup runs per event. On a 268k-call real history this is 1.9 ms per summary
-(it was 3.5 s when it re-walked the events), and `TestIndexEqualsNaivePerEventSummary` checks the index
+expression or price lookup runs per event. `BenchmarkSummarizeIndexed` (`go test -bench Summarize ./internal/agg`)
+times a summary of 300k synthetic events on your machine, and `TestIndexEqualsNaivePerEventSummary` checks the index
 against a naive per-event computation for random filters and time zones. Date filters therefore have
 day granularity in the chosen time zone.
 
@@ -81,9 +86,9 @@ database's `-wal` sidecar is part of its cache key) and `Experimental` (a reason
 warns while such a provider's data is included).
 
 ### Limits
-There are **no event caps**: every event is kept so totals are exact. The cost is memory (~180 bytes
-per call: 1M calls ≈ 180 MB retained) and the warm-start time to decode the cache (~2 s per million
-calls). If that becomes a problem the next step is pre-aggregating cached entries by day/model/project;
+There are **no event caps**: every event is kept so totals are exact. The cost is memory: each call keeps a
+176-byte `model.Event` struct (`unsafe.Sizeof`; the strings it refers to are extra, and the total was not measured), and
+the warm-start time to decode the cache. Neither is benchmarked over a whole history. If that becomes a problem the next step is pre-aggregating cached entries by day/model/project;
 it is not done because it would complicate drill-down filters.
 
 ## Adding a provider
@@ -107,7 +112,7 @@ A provider whose format cannot be verified should stay detection-only (see `Gemi
 
 Tag `vX.Y.Z` → `.github/workflows/release.yml` runs the tests and GoReleaser, publishing
 `gg_<os>_<arch>.tar.gz` / `.zip` and `checksums.txt`. `scripts/install.sh` and `scripts/install.ps1`
-download the latest release and verify the checksum.
+(also release assets) download the latest release, verify the signature and the checksum, then install.
 
 ## Notes and the UI
 

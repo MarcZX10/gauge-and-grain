@@ -12,12 +12,15 @@
   go list -deps ./cmd/gg | grep -E '^(net/http|crypto/tls)$'      # prints nothing
   ```
 
-  The only `net`-family imports are `net/url` (parsing the file URI used to open a SQLite database read-only) and
-  `net` pulled in by a UUID library inside the SQLite driver (type definitions for hardware addresses; nothing is
-  dialled).
+  The `net`-family packages in the build are `net/url` (parsing the file URI used to open a SQLite database read-only),
+  and `net` with `net/netip`, which come in through a UUID library inside the SQLite driver (type definitions for hardware
+  addresses). gg's code never dials, listens or resolves a name, so the program makes no network request.
+- The binary also links `os/exec`: Bubble Tea, the terminal colour library and the SQLite driver's C runtime import it.
+  gg's own code does not run a program. (`scripts/notices` runs `go list`, and tests run the built binary.)
 - Only the **installers** use the network (`scripts/install.sh`, `scripts/install.ps1`), to download a release from
-  GitHub. They verify its SHA-256 checksum, and its signature when `cosign` is installed, before installing anything
-  (see [Verify a download](#verify-a-download)). Prices are embedded in the binary, so everything works offline.
+  GitHub. They verify its signature with `cosign` and its SHA-256 checksum before installing anything. Without `cosign`
+  they stop, unless you set `GG_ALLOW_UNVERIFIED=1` (see [Verify a download](#verify-a-download)). Prices are embedded
+  in the binary, so everything works offline.
 
 ## What is read
 
@@ -36,22 +39,27 @@ files of at most 64 MB, and changing one of them invalidates the cached result o
 
 ## What is written
 
-`gg` writes to exactly one place: its **cache** directory (`gg sources` prints the path), which holds, per source
-file, the kept fields above plus a little parser state needed to resume (for example Codex's current model and
-cumulative counters, or Pi's working directory). The directory is readable only by you (`0700`, files `0600`). It is
-derived data: delete it any time with `gg cache clear`, which removes only the files `gg` wrote. Entries whose log has
-disappeared are removed on the next scan. `gg` never modifies or deletes the logs it reads.
+`gg` writes only these:
+
+- **The cache directory** (`gg sources` prints the path): per source file, the kept fields above plus the parser state
+  needed to resume (for example Codex's current model and cumulative counters, or Pi's working directory). The directory
+  is readable only by you (`0700`, files `0600`). It is derived data: `gg cache clear` removes the files `gg` wrote.
+  Entries whose log has disappeared are removed on the next scan. Writes are atomic, through temporary `gg-*.tmp` files
+  in the same directory.
+- **`tui.json`** in the config directory (`<config dir>/gauge-and-grain/`, or `GG_CONFIG_DIR`), written when the dashboard
+  exits: the sort, view, period preset and compact mode. It holds no paths, no names and no usage figures. Delete it to
+  forget them.
+- **`gg-<view>-<time>.csv`** in the folder you started `gg` from, only when you press `e` in the dashboard. It is the same
+  CSV as `gg export` (see below), and it can contain project paths and session ids. It is created exclusively with mode
+  `0644` before your umask, so other users on the machine may be able to read it.
+
+`gg` never modifies or deletes the logs it reads.
 
 SQLite databases (OpenCode, Kilo CLI) are never written to, and `gg` creates no `-shm`, `-wal` or journal files beside
-them. A database with no write-ahead log is opened in immutable mode. When its `-wal` holds recent rows, the database
-and its log are copied to a private temporary directory (at most 1 GB), read there, and the copy is deleted.
-
-Two more files can be written, both only when you ask for them or when the dashboard runs:
-
-- **`tui.json`** in the config directory (`<config dir>/gauge-and-grain/`): the dashboard's sort, view, period preset and
-  compact mode. It holds no paths, no names and no usage figures. Delete it to forget them.
-- **`gg-<view>-<time>.csv`** in the folder you started `gg` from, when you press `e` in the dashboard. It is the same
-  CSV as `gg export`: it can contain project paths and session ids (see below). Nothing is written unless you press `e`.
+them. A database with no write-ahead log is opened in immutable mode. When its `-wal` holds recent rows, the database and
+its log are copied to a new `gg-sqlite-*` directory in the system temporary directory (at most 1 GB), read there, and that
+directory is removed as soon as the database has been read, including after an error. It is not kept until exit. If gg
+is killed during that read, the copy can be left behind; delete the `gg-sqlite-*` folders then.
 
 ## What an export contains
 
@@ -90,9 +98,11 @@ folder name). `gg` is designed so that none of this can crash it or corrupt tota
 
 ## Verify a download
 
-Release archives are built by GitHub Actions from a tag that points at `main` (see
-`.github/workflows/release.yml`). The build runs in a protected `release` environment, the archives carry GitHub build
-provenance, and `checksums.txt` is signed keylessly with the workflow's own identity (Sigstore).
+Release archives are built by GitHub Actions from a tag (see `.github/workflows/release.yml`). The workflow itself checks
+that the tag points at `main`, runs the tests, signs `checksums.txt` keylessly with the workflow's own identity
+(Sigstore), and attests the archives with GitHub build provenance. The `release` environment that holds the publishing
+job is protected by a repository setting, not by the code: a required reviewer and a deployment-tag rule. The maintainer
+checks that setting before each release ([release checklist](CONTRIBUTING.md#release-checklist)).
 
 A checksum only shows that a file is intact; the signature and the provenance show where it was built. Check both:
 
@@ -109,7 +119,13 @@ sha256sum -c checksums.txt --ignore-missing
 gh attestation verify gg_linux_amd64.tar.gz --repo MarcZX10/gauge-and-grain
 ```
 
-The installers do steps 1 and 2 when `cosign` is installed and say so when it is not. Or skip binaries and build from
-source: `go install github.com/MarcZX10/gauge-and-grain/cmd/gg@latest` (requires Go 1.26 or later).
+The installers do steps 1 and 2 and stop without `cosign` (or install with only step 2 if you set
+`GG_ALLOW_UNVERIFIED=1`). Or skip binaries and build from source:
+`go install github.com/MarcZX10/gauge-and-grain/cmd/gg@latest` (requires Go 1.26 or later).
+
+The installer scripts are release assets too, and they are listed in `checksums.txt`, so steps 1 and 2 cover them.
+`curl ... | sh` runs a script before any check can happen. To check it first, download `install.sh` (or `install.ps1`)
+together with `checksums.txt`, `checksums.txt.pem` and `checksums.txt.sig`, run steps 1 and 2 in that folder, and only
+then run the script. Releases before the one that added the scripts do not contain them.
 
 Found a problem? Open an issue — and please sanitise any log you attach.

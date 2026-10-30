@@ -13,8 +13,9 @@ make cross        # compile for linux/darwin/windows × amd64/arm64
 go vet ./... && gofmt -l .   # CI fails on either
 ```
 
-Go 1.26+ (the version in `go.mod`). The only third-party code is Bubble Tea (event loop), `go-runewidth`, `go-isatty`, `x/term`, `x/sys`,
-`modernc.org/sqlite` (pure-Go, no CGO) and `klauspost/compress/zstd`. CI runs the tests on Linux, macOS and Windows.
+Go 1.26+ (the version in `go.mod`). Its direct third-party requirements are the `go.mod` entries without `// indirect`: Bubble Tea (event loop),
+`go-runewidth`, `go-isatty`, `x/term`, `x/sys`, `modernc.org/sqlite` (pure-Go, no CGO) and `klauspost/compress/zstd`.
+Their own dependencies (Lip Gloss, termenv, google/uuid and others) are listed in `go.mod` and `THIRD_PARTY_NOTICES.md`. CI runs the tests on Linux, macOS and Windows.
 
 ## Layout
 
@@ -80,8 +81,32 @@ Releases are built from tags by `.github/workflows/release.yml` (GoReleaser):
 git tag -a v0.6.0 -m "gg v0.6.0" && git push origin v0.6.0
 ```
 
-It runs the tests, then publishes `gg_<os>_<arch>` archives and `checksums.txt`, which the installers use. Check the
-installer afterwards: `curl -fsSL …/scripts/install.sh | sh`.
+It runs the tests, builds the `gg_<os>_<arch>` archives and `checksums.txt` into a draft release, attests the archives,
+and only then publishes the draft. The installers use those assets. Check the installer afterwards:
+`curl -fsSL …/releases/latest/download/install.sh | sh`.
+
+### Release checklist
+
+The workflow can check that a tag points at `main`, but it cannot protect the `release` environment or the tags. Those
+are repository settings; check them before you push a `v*` tag (you need admin rights to change them):
+
+1. The `release` environment has a **required reviewer**, so a pushed tag alone cannot publish.
+2. The `release` environment allows deployments only from **tags `v*`**.
+3. A **tag ruleset** for `v*` stops tags from being moved or deleted.
+4. **`main` is protected** (branch protection or a ruleset), so the "tag points at `main`" check means something.
+
+Read-only checks (`R` is the repository; they need `gh auth login`):
+
+```sh
+R=MarcZX10/gauge-and-grain
+gh api repos/$R/environments/release --jq '.protection_rules'                  # expect a required_reviewers entry
+gh api repos/$R/environments/release/deployment-branch-policies --jq '.branch_policies[] | "\(.type) \(.name)"'   # expect: tag v*; 404 = any branch or tag can deploy
+gh api repos/$R/rulesets --jq '.[] | "\(.target) \(.name) \(.enforcement)"'  # expect a tag ruleset for v*
+gh api repos/$R/branches/main/protection --jq '.required_pull_request_reviews'  # 404 "Branch not protected" = not protected
+```
+
+An empty `protection_rules` list, a 404 on the deployment policies, no tag ruleset, or a 404 on `main` means the setting
+is missing, and a release tag would publish without a second person. Fix it before tagging.
 
 ## Style
 

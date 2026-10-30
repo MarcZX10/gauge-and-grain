@@ -21,6 +21,19 @@ archives:
     files: [LICENSE, THIRD_PARTY_NOTICES.md, README.md, docs/*]
 checksum:
   name_template: checksums.txt
+  # The installers are published as release assets, so the README can point at
+  # releases/latest/download/install.sh instead of the mutable main branch.
+  # Listing them here puts their hashes under the signature on checksums.txt.
+  extra_files:
+    - glob: ./scripts/install.sh
+    - glob: ./scripts/install.ps1
+release:
+  # a draft until the workflow has attested the archives; release.yml publishes it
+  draft: true
+  replace_existing_draft: true # a re-run after a failure replaces the draft, never a published release
+  extra_files:
+    - glob: ./scripts/install.sh
+    - glob: ./scripts/install.ps1
 # The checksum file is signed keylessly with the release workflow's identity
 # (Sigstore). The installers and `cosign verify-blob` check it against that
 # identity, so a replaced release cannot pass as genuine.
