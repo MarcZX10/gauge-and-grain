@@ -83,12 +83,12 @@ func (t Theme) Select(s string, w int) string {
 
 // Dot is a provider-coloured bullet.
 func (t Theme) Dot(provider string) string {
-	if !t.Color {
-		return " "
-	}
 	g := "●"
 	if t.ASCII {
 		g = "*"
+	}
+	if !t.Color { // no colour: the glyph itself still marks the provider
+		return g
 	}
 	return t.FG(ProviderColor(provider), g)
 }
@@ -316,8 +316,8 @@ func Detail(t Theme, g *agg.Group, w int) []string {
 	default:
 		out = append(out, "cost: "+t.Bold(Cost(g.Cost))+t.Dim(" API-equivalent"))
 	}
-	for m, n := range g.Unpriced {
-		out = append(out, t.Warn("unpriced ")+m+t.Dim(" "+Tokens(n)))
+	for _, m := range unpricedOrder(g.Unpriced) {
+		out = append(out, t.Warn("unpriced ")+m+t.Dim(" "+Tokens(g.Unpriced[m])))
 	}
 	if sh, ok := g.CacheShare(); ok && g.Has&model.HasCacheRead != 0 {
 		out = append(out, t.Dim("cache hit share "+Pct(sh)))

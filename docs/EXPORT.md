@@ -33,11 +33,13 @@ One object:
 | Key | Contents |
 |---|---|
 | `generated` | UTC timestamp |
-| `range` | `name`, `from`, `to_exclusive` (UTC; `null` for all time), `timezone` |
+| `range` | `name`, `from`, `to_exclusive` (UTC; `null` for all time), `timezone` (IANA name, e.g. `Europe/Madrid`; `null` when only the system's local time is known), `utc_offset` (the offset at the start of the period, e.g. `+02:00`; at now for all time) |
 | `filters` | the non-date filters, as text |
+| `partial` | `true` when the scan was cancelled and the totals cover only the files read; `false` otherwise |
+| `partial_reason` | why the export is partial; only present when `partial` is `true` |
 | `total` | one *group* (below) for the whole selection |
 | `previous_period` | a group for the comparison window (only for bounded ranges) |
-| `by_day`, `by_provider`, `by_model`, `by_project`, `by_session` | arrays of groups, largest first (`by_day` is chronological, gaps filled) |
+| `by_day`, `by_provider`, `by_model`, `by_project`, `by_session` | arrays of groups, largest first (`by_day` is chronological and has one entry for every day of the range, days with no usage included: `total_tokens` 0, `cost_status` `none`) |
 | `sources` | per tool: `id`, `name`, `status`, `files`, `detail` |
 | `parse` | `malformed`, `clamped`, `oversized`, `duplicates_merged`, `unreadable_files` |
 | `notes` | the standing caveats (cost is an estimate; null means not reported; the total formula) |
@@ -66,11 +68,15 @@ A **group** (illustrative values):
 
 ## CSV
 
+`--by` only applies with `--format csv`; `--format` only applies to `gg export`.
+
 `--by day|provider|model|project|session` writes one row per group with the columns
 
 ```
 key,label,sessions,calls,input_tokens,cache_read_tokens,cache_write_tokens,output_tokens,reasoning_tokens,total_tokens,cost_usd,cost_status
 ```
+
+`--by day` has one row for every day of the range, including days with no usage (zero tokens, `cost_status` `none`).
 
 `--by events` writes one row per API call (after de-duplication):
 

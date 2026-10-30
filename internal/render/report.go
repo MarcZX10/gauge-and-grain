@@ -108,9 +108,12 @@ func Overview(t Theme, c *Ctx, width int) []string {
 		} else {
 			costNote = t.Dim("API-equivalent estimate at list prices; not your subscription bill")
 		}
-		if s.Prev != nil {
-			if ch, ok := agg.Change(tot.Cost, s.Prev.Cost); ok && tot.Complete() {
+		if s.Prev != nil && tot.Complete() {
+			// an unpriced previous period is a lower bound: a change against it would be invented
+			if ch, ok := agg.Change(tot.Cost, s.Prev.Cost); ok && s.Prev.Complete() {
 				costNote = t.Arrow(ch) + t.Dim(fmt.Sprintf(" vs previous (%s) · API-equivalent estimate", Cost(s.Prev.Cost)))
+			} else if !s.Prev.Complete() {
+				costNote = t.Dim("API-equivalent estimate · change n/a: previous period has unpriced usage")
 			}
 		}
 	} else if tot.Tokens() == 0 {
@@ -372,11 +375,7 @@ func NoteItems(c *Ctx) []Note {
 	add(false, "Cost is an estimate of what these tokens would cost at public API list prices — not your subscription bill. Plans like Claude Pro/Max or ChatGPT bill differently, so it will not match an invoice.")
 	tot := c.Sum.Total
 	if len(tot.Unpriced) > 0 {
-		var names []string
-		for m := range tot.Unpriced {
-			names = append(names, m)
-		}
-		sort.Slice(names, func(i, j int) bool { return tot.Unpriced[names[i]] > tot.Unpriced[names[j]] })
+		names := unpricedOrder(tot.Unpriced)
 		if len(names) > 4 {
 			names = append(names[:4], fmt.Sprintf("+%d more", len(names)-4))
 		}
@@ -428,6 +427,22 @@ func NoteItems(c *Ctx) []Note {
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Warn && !out[j].Warn }) // warnings first
 	return out
+}
+
+// unpricedOrder lists unpriced models largest first; equal token counts are
+// ordered by name so the output does not change from run to run.
+func unpricedOrder(m map[string]int64) []string {
+	names := make([]string, 0, len(m))
+	for n := range m {
+		names = append(names, n)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		if m[names[i]] != m[names[j]] {
+			return m[names[i]] > m[names[j]]
+		}
+		return names[i] < names[j]
+	})
+	return names
 }
 
 // NoteCounts returns how many notes need attention and how many there are.
