@@ -5,24 +5,65 @@ and versions follow [Semantic Versioning](https://semver.org/). Dates are the da
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-30
+
 ### Security
 
 - The installers need `cosign` to verify the release signature and stop without it. `GG_ALLOW_UNVERIFIED=1` installs with
   the checksum check only.
+- The release is attested before it is published. Dependabot checks the GitHub Actions and Go modules weekly, and CI runs
+  `govulncheck`. The build uses Go 1.26.1, which fixes GO-2026-4602 in the standard library `os` package.
+- OpenCode databases with a write-ahead log are copied to a temporary directory. Read errors are reported instead of
+  producing partial totals, stale copies are removed, and a copy over the size limit is an error, not a truncated copy.
+- Symlinked directories inside a log root are followed, so `gg` can read `.jsonl` files outside that root. See
+  [PRIVACY](docs/PRIVACY.md).
 
 ### Changed
 
-- The installers are published as release assets, and the README links to `releases/latest/download/`, not to the
-  `main` branch. The installer scripts are listed in the signed `checksums.txt`.
-- Releases are drafts until the archives are attested, and only then are they published.
-- The release tools are pinned: GoReleaser v2.19.0 and cosign v2.6.5. Dependabot checks the GitHub Actions and Go modules
-  weekly, and CI runs `govulncheck` (v1.9.0).
-- Documentation corrections: the third-party dependencies, the fuzz coverage, the collision odds, and the performance
-  figures that no benchmark in the repository measures.
+- Price lookup is exact after normalisation. Unlisted variants are no longer priced at their parent's rate, and aliases are
+  listed explicitly. Dotted Claude versions resolve, and `claude-sonnet-4-5` and `claude-opus-4-1` are priced. A broken
+  price file is an error at load.
+- The daily view covers the whole window and includes days without usage. The JSON `by_day` and the day CSV include them.
+- JSON export: `partial` is always present (with `partial_reason` when cancelled), `range.timezone` is the IANA name or
+  `null`, and `range.utc_offset` is new. CSV output has no `partial` marker.
+- The cost change against the previous period is shown only when both periods are complete.
+- Events dated before 2015 or more than a day in the future are dropped and counted. The cache schema is 4.
+- Parser versions are bumped, so the first run after upgrading reparses the logs.
+- `--format` and `--by` given where they do nothing are errors.
+- The installers are published as release assets, GoReleaser v2.19.0 and cosign v2.6.5 are pinned, and releases are
+  drafts until they are attested.
+- Documentation matches the behaviour: privacy, architecture, limitations, metrics, providers, prices and export. The
+  release checklist is in [CONTRIBUTING](docs/CONTRIBUTING.md).
 
 ### Added
 
-- `SECURITY.md`, issue templates for bugs and provider support, and a pull request template.
+- Codex `local_shell_call` tool calls are counted as `local_shell`.
+- `aliases` and a `provider` field in the price data.
+- `SECURITY.md`, issue templates for bugs and provider support, a pull request template, and a notice that `gg` is not
+  affiliated with the providers whose logs it reads.
+
+### Fixed
+
+- Claude: a call written as two lines, one with `requestId` and one without, is counted once.
+- Codex: a tool call whose arguments mention `token_count` keeps its tool use.
+- Pi and Gemini: forked entries and the `.json` and `.jsonl` copies of one session are not counted twice. Pi model names
+  drop the provider prefix.
+- DeepSeek: a negative output count is clamped once.
+- The cost change no longer shows a spurious rise against an incomplete previous period.
+- CSV export returns write errors, so a full disk no longer leaves a truncated file behind with exit code 0.
+- Cache pruning keeps a provider's cache when its logs cannot be found (dead links, unmounted disks).
+- An existing cache directory keeps its permissions.
+- Dashboard: the Daily tab no longer panics with no data; background refresh keeps the cursor and a day drill; Esc cancels a
+  refresh; a newer scan cancels the older one; ASCII panels keep their borders; the cursor stays on screen after a resize;
+  going back restores the provider filter; search and the picker take one space; export works only on table tabs; the
+  preferences file is written atomically.
+- Only visible rows are drawn, so large session lists stay responsive.
+- `FORCE_COLOR=0` and `FORCE_COLOR=false` turn colour off. Unpriced lists have a stable order. Providers keep a marker
+  without colour.
+- A midnight that does not exist (DST gap) no longer includes the excluded day. Session labels are unique within a summary.
+- A FIFO in a log directory no longer blocks the scan. A changed side file is reparsed. An unterminated last line is
+  counted once it is complete.
+- Token counts promote their unit after rounding, and the progress meter shows bytes in byte units.
 
 ## [0.6.1] - 2026-10-30
 
