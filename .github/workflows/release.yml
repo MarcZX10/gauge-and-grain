@@ -46,7 +46,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # goreleaser leaves the release as a draft, so a failed attestation above
       # stops here and nothing is public. Publish only after the attestation exists.
-      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: "dist/gg_*.tar.gz,dist/gg_*.zip,dist/checksums.txt"
       - name: Publish the draft release
