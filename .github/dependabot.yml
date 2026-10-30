@@ -1,0 +1,11 @@
+version: 2
+updates:
+  # action SHA pins in .github/workflows (dependabot keeps the # vX comment in step)
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly

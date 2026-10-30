@@ -54,10 +54,10 @@ Usage that never reaches a local log (web chat UIs, other machines, deleted logs
 
 ## Performance and memory
 
-- Every API call is kept in memory so totals stay exact (no sampling or event caps): about **180 bytes per call**
-  (1 million calls ≈ 180 MB).
-- Starting from a warm cache costs about two seconds per million calls (decoding the cache). The first scan is limited by
-  disk speed (roughly 200 MB/s on the development machine).
+- Every API call is kept in memory so totals stay exact (no sampling or event caps). Each call is a 176-byte
+  `model.Event` struct before its strings, so memory grows with the history; the total is not measured.
+- Starting from a warm cache means decoding the cache, which also grows with the history. The first scan is limited by
+  disk speed. Neither is benchmarked over a whole history.
 - A log that has only grown is resumed from the last complete line; a log that was rewritten (or a single-document file
   or database that changed) is re-read in full.
 

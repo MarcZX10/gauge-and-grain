@@ -10,7 +10,7 @@ as a compact report or an interactive terminal dashboard. Run it with <code>gg</
 - **Local only** — reads the logs your tools already write; nothing is uploaded, no HTTP client in the binary.
 - **Honest numbers** — unknown models are *unpriced*, unreported fields are *n/a*, never a silent `0`; cost is labelled an estimate.
 - **Counted once** — streamed chunks, resumed sessions, archived copies and Codex re-broadcasts are de-duplicated.
-- **Fast** — incremental cache; a filter or period change on 270k API calls takes ~2 ms.
+- **Fast** — incremental cache; filters and period changes work on aggregated cells, not on every API call.
 
 ## Install
 
@@ -20,8 +20,8 @@ irm https://raw.githubusercontent.com/MarcZX10/gauge-and-grain/main/scripts/inst
 go install github.com/MarcZX10/gauge-and-grain/cmd/gg@latest                                           # any OS with Go 1.26+
 ```
 
-Update by running the same command again. The installers verify a SHA-256 checksum, and the release signature when
-`cosign` is installed; [how to check a download](docs/PRIVACY.md#verify-a-download).
+Update by running the same command again. The installers need `cosign` to check the release signature (and verify
+the SHA-256 checksum); [how to check a download](docs/PRIVACY.md#verify-a-download).
 
 ## Use
 
@@ -78,6 +78,10 @@ appears · exports use empty cells / `null`, never invented zeros · see [limita
 | [FAQ & troubleshooting](docs/FAQ.md) | "no data", "unpriced", "doesn't match my bill"… |
 | [Limitations](docs/LIMITATIONS.md) | everything it cannot do or derive |
 | [Architecture](docs/ARCHITECTURE.md) · [Contributing](docs/CONTRIBUTING.md) | design, tests, adding a tool, regenerating screenshots |
+
+## Not affiliated
+
+`gg` is an independent project. It is not affiliated with, endorsed by or sponsored by Anthropic, OpenAI, Google, DeepSeek or any other provider whose tools it reads. Product names are used only to identify the logs those tools write.
 
 ## Licence
 

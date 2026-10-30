@@ -20,8 +20,10 @@ jobs:
   release:
     needs: test
     runs-on: ubuntu-latest
-    # Protect this environment in the repository settings (required reviewer)
-    # so that a pushed tag alone cannot publish a release.
+    # The maintainer must protect this environment in the repository settings:
+    # a required reviewer, and deployment tags limited to v*. Nothing in this
+    # repository enforces that. Without it a pushed tag alone can publish a
+    # release. The checklist is in docs/CONTRIBUTING.md (Release checklist).
     environment: release
     permissions:
       contents: write     # create the release and upload its assets
@@ -35,12 +37,20 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with: { go-version-file: go.mod }
       - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+        with: { cosign-release: 'v2.6.5' } # pinned: the action's default is older, and the sign-blob flags target cosign v2
       - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
-          version: "~> v2"
+          version: v2.19.0
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # goreleaser leaves the release as a draft, so a failed attestation above
+      # stops here and nothing is public. Publish only after the attestation exists.
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: "dist/gg_*.tar.gz,dist/gg_*.zip,dist/checksums.txt"
+      - name: Publish the draft release
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}

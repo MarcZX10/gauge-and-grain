@@ -206,7 +206,7 @@ paths in use.
 ## Colour, plain output and small terminals
 
 - Colour is on only for a terminal. `--no-color` (alias `--plain`), `NO_COLOR`, or `TERM=dumb` turn it off;
-  `FORCE_COLOR=1` turns it on for a pipe.
+  `FORCE_COLOR=1` turns it on for a pipe; `FORCE_COLOR=0` or `FORCE_COLOR=false` turns it off.
 - `--ascii` (or a non-UTF-8 locale such as `LANG=C`) replaces bars, arrows and borders with ASCII.
 - The dashboard needs at least **40×8**; below that it asks for a bigger window instead of drawing garbage. As the
   terminal narrows it drops columns, shortens tab names, hides the details panel and finally shows one tab at a time.

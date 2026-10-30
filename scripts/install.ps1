@@ -1,8 +1,9 @@
 # gg installer for Windows (PowerShell 5.1+).
-#   irm https://raw.githubusercontent.com/MarcZX10/gauge-and-grain/main/scripts/install.ps1 | iex
-# Re-run to update. Verifies the release checksum, and the release signature
-# when cosign is installed (see docs/PRIVACY.md#verify-a-download).
+#   irm https://github.com/MarcZX10/gauge-and-grain/releases/latest/download/install.ps1 | iex
+# Re-run to update. Verifies the release signature with cosign (required; nothing
+# is installed without it) and the release checksum (see docs/PRIVACY.md#verify-a-download).
 # Env: GG_VERSION (default: latest)  GG_INSTALL_DIR (default: %LOCALAPPDATA%\gg\bin)
+#      GG_ALLOW_UNVERIFIED=1 installs without cosign, checking only the checksum (not recommended)
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ProgressPreference = 'SilentlyContinue'
@@ -15,6 +16,12 @@ if (-not $base) {
 $dir = if ($env:GG_INSTALL_DIR) { $env:GG_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'gg\bin' }
 $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
 $name = "gg_windows_$arch.zip"
+# Fail closed: without cosign the release signature cannot be checked, so
+# nothing is downloaded or installed unless the user opts out explicitly.
+$cosign = Get-Command cosign -ErrorAction SilentlyContinue
+if (-not $cosign -and $env:GG_ALLOW_UNVERIFIED -ne '1') {
+  throw 'cosign is not installed, so the release signature cannot be checked; nothing installed. Install cosign (https://docs.sigstore.dev/cosign/system_config/installation/) and run this again, or set GG_ALLOW_UNVERIFIED=1 to install with only the checksum check (not recommended).'
+}
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid())
 New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
@@ -24,7 +31,6 @@ try {
 
   # Checksums only prove the file is intact. The signature proves the
   # checksums came from this repository's release workflow.
-  $cosign = Get-Command cosign -ErrorAction SilentlyContinue
   if ($cosign) {
     try {
       Invoke-WebRequest "$base/checksums.txt.pem" -OutFile "$tmp\checksums.txt.pem" -UseBasicParsing
@@ -36,7 +42,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "the signature on checksums.txt does not match this repository's release workflow; nothing installed" }
     Write-Host "Signature verified (cosign, release workflow of $repo)."
   } else {
-    Write-Warning 'cosign is not installed, so the release signature was NOT checked. The checksum only shows the download is intact. See docs/PRIVACY.md#verify-a-download.'
+    Write-Warning 'GG_ALLOW_UNVERIFIED=1 and cosign is not installed, so the release signature was NOT checked. The checksum only shows the download is intact. See docs/PRIVACY.md#verify-a-download.'
   }
 
   $line = Get-Content "$tmp\checksums.txt" | Where-Object { $_ -match " $([regex]::Escape($name))$" } | Select-Object -First 1

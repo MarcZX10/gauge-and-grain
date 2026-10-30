@@ -36,6 +36,15 @@ jobs:
         with: { go-version-file: go.mod }
       - run: go mod tidy && git diff --exit-code -- go.mod go.sum
       - run: go run ./scripts/notices | diff -q - THIRD_PARTY_NOTICES.md
+  vulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with: { go-version-file: go.mod }
+      # pinned exactly, so the scanner changes only through a reviewed edit (dependabot does not track it)
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
   cross-build:
     runs-on: ubuntu-latest
     steps:
@@ -57,5 +66,5 @@ jobs:
       # so a broken .goreleaser.yaml fails here and not on a release tag.
       - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
-          version: "~> v2"
+          version: v2.19.0
           args: release --snapshot --clean --skip=sign,publish

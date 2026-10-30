@@ -42,8 +42,8 @@ counter would add up; the period boundaries differ (`gg` uses whole local days);
 
 It reads every log once (a big Codex history can be tens of gigabytes). The dashboard and the report show progress and
 you can cancel with `Esc` in the dashboard (or `Ctrl-C` in the report): finished files stay cached and the next run resumes. After that only changed
-files are read, and a live session is resumed from where it stopped. A warm start takes about two seconds per million
-calls. `--no-cache` ignores the cache; `gg cache clear` empties it.
+files are read, and a live session is resumed from where it stopped. A warm start decodes the cache, which takes longer
+the bigger the history. `--no-cache` ignores the cache; `gg cache clear` empties it.
 
 ## The dashboard is slow, or shows garbage
 
@@ -78,3 +78,7 @@ It works fully offline and never makes a network request ([PRIVACY.md](PRIVACY.m
 
 Update: run the install command again. Uninstall: delete the `gg` binary (`~/.local/bin/gg`, or
 `%LOCALAPPDATA%\gg\bin\gg.exe`) and, if you like, its cache directory.
+
+## Is gg affiliated with the tools it reads?
+
+No. `gg` is an independent project. It is not affiliated with, endorsed by or sponsored by Anthropic, OpenAI, Google, DeepSeek or any other provider whose tools it reads. Product names are used only to identify the logs those tools write.
