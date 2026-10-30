@@ -5,6 +5,7 @@ import (
 	"math"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/MarcZX10/gauge-and-grain/internal/model"
 	"github.com/MarcZX10/gauge-and-grain/internal/pricing"
@@ -283,5 +284,87 @@ func TestToolUsesAreCountedPerViewAndOrdered(t *testing.T) {
 	s = idx.Summarize(Filter{Projects: []string{"/b"}})
 	if len(s.Tools) != 1 || s.Tools[0].Name != "Read" || s.Tools[0].Uses != 1 {
 		t.Errorf("the project filter must apply to tools too: %+v", s.Tools)
+	}
+}
+
+func TestDailyFillsTheWholeWindow(t *testing.T) {
+	pt, _ := pricing.Load("")
+	evs := []model.Event{ev(2, "claude", "m", "/a", "s", 1, 1), ev(4, "claude", "m", "/a", "s", 1, 1), ev(6, "claude", "m", "/a", "s", 1, 1)}
+	f := Filter{From: time.Date(2026, 10, 1, 0, 0, 0, 0, utc), To: time.Date(2026, 10, 8, 0, 0, 0, 0, utc)}
+	s := Summarize(evs, f, pt, utc)
+	active := 0
+	for _, d := range s.ByDay {
+		if d.Tokens() > 0 {
+			active++
+		}
+	}
+	if len(s.ByDay) != 7 || active != 3 {
+		t.Errorf("7-day window with usage on 3 days: %d rows, %d active", len(s.ByDay), active)
+	}
+	if s.ByDay[0].Key != "2026-10-01" || s.ByDay[6].Key != "2026-10-07" {
+		t.Errorf("window edges: %s .. %s", s.ByDay[0].Key, s.ByDay[6].Key)
+	}
+	// All time: from the first to the last event day.
+	if all := Summarize(evs, Filter{}, pt, utc); len(all.ByDay) != 5 {
+		t.Errorf("unbounded: %d rows, want 5 (2..6 Oct)", len(all.ByDay))
+	}
+}
+
+func TestDailyWindowIsClampedToToday(t *testing.T) {
+	m := map[string]*Group{"2026-10-02": newGroup("2026-10-02", "x")}
+	f := Filter{From: time.Date(2026, 10, 1, 0, 0, 0, 0, utc), To: time.Date(2026, 11, 1, 0, 0, 0, 0, utc)}
+	now := time.Date(2026, 10, 3, 9, 0, 0, 0, utc)
+	days := fillDays(m, f, utc, now)
+	if len(days) != 3 || days[2].Key != "2026-10-03" {
+		t.Errorf("future days must not be filled: got %d rows, last %s", len(days), days[len(days)-1].Key)
+	}
+}
+
+func TestMidnightInDSTGapDoesNotIncludeExcludedDay(t *testing.T) {
+	// Asia/Beirut skips 00:00 to 01:00 on 2025-03-30, so To = 00:00 normalises to 01:00.
+	loc, err := time.LoadLocation("Asia/Beirut")
+	if err != nil {
+		t.Skip("tz database lacks Asia/Beirut")
+	}
+	pt, _ := pricing.Load("")
+	var evs []model.Event
+	for _, d := range []int{29, 30, 31} {
+		evs = append(evs, model.Event{Provider: "claude", Model: "m", Session: "s", Input: 1,
+			Time: time.Date(2025, 3, d, 12, 0, 0, 0, loc)})
+	}
+	to := time.Date(2025, 3, 30, 0, 0, 0, 0, loc)
+	if s := Summarize(evs, Filter{To: to}, pt, loc); s.Total.Events != 1 {
+		t.Errorf("To=2025-03-30 00:00 (gap) must exclude 30 March: %d events", s.Total.Events)
+	}
+	from := time.Date(2025, 3, 30, 0, 0, 0, 0, loc)
+	if s := Summarize(evs, Filter{From: from}, pt, loc); s.Total.Events != 2 {
+		t.Errorf("From=2025-03-30 00:00 (gap) must include 30 March: %d events", s.Total.Events)
+	}
+}
+
+func TestShortIDIsRuneSafe(t *testing.T) {
+	got := ShortID("ñáéíóúüçñ-extra")
+	if !utf8.ValidString(got) || utf8.RuneCountInString(got) != 8 {
+		t.Errorf("ShortID cut inside a rune: %q", got)
+	}
+}
+
+func TestSessionLabelsStayUniqueWithinASummary(t *testing.T) {
+	// UUIDv7 starts with a timestamp: sessions started close together share a prefix.
+	pt, _ := pricing.Load("")
+	evs := []model.Event{
+		ev(1, "claude", "m", "/a", "0190abcd-1111-7000-8000-000000000001", 1, 1),
+		ev(1, "claude", "m", "/a", "0190abcd-2222-7000-8000-000000000002", 1, 1),
+	}
+	s := Summarize(evs, Filter{}, pt, utc)
+	seen := map[string]bool{}
+	for _, g := range s.BySession {
+		if seen[g.Label] {
+			t.Errorf("duplicate session label %q", g.Label)
+		}
+		seen[g.Label] = true
+	}
+	if len(seen) != 2 {
+		t.Errorf("want 2 distinct session labels, got %v", seen)
 	}
 }
