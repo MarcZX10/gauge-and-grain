@@ -70,3 +70,31 @@ func TestSymlinkedRootIsFollowed(t *testing.T) {
 		t.Errorf("a symlinked root must be followed: %v", got)
 	}
 }
+
+// Opening a FIFO must not wait for a writer: ReadRegular checks the type of
+// the opened file, which covers a FIFO that appears after its stat.
+func TestOpenNoBlockDoesNotWaitOnAFIFO(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "meta.json")
+	if err := syscall.Mkfifo(p, 0o644); err != nil {
+		t.Skip("no mkfifo here:", err)
+	}
+	done := make(chan bool, 1)
+	go func() {
+		f, err := openNoBlock(p)
+		if err != nil {
+			done <- false
+			return
+		}
+		defer f.Close()
+		fi, err := f.Stat()
+		done <- err == nil && fi.Mode().IsRegular()
+	}()
+	select {
+	case regular := <-done:
+		if regular {
+			t.Fatal("a FIFO was opened as a regular file")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("opening a FIFO waited for a writer")
+	}
+}

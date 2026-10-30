@@ -38,3 +38,35 @@ func TestNamedPipeInTheLogTreeDoesNotHang(t *testing.T) {
 	}
 	_ = os.Remove(filepath.Join(cl, "projects", "p", "pipe.jsonl"))
 }
+
+// A path swapped for a FIFO after the stat must not hang the open: the type
+// is checked on the opened file instead.
+func TestOpeningAFIFODoesNotWait(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "pipe.jsonl")
+	if err := syscall.Mkfifo(p, 0o644); err != nil {
+		t.Skip(err)
+	}
+	type outcome struct {
+		regular bool
+		err     error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		f, err := openLog(p)
+		if err != nil {
+			done <- outcome{err: err}
+			return
+		}
+		defer f.Close()
+		fi, err := f.Stat()
+		done <- outcome{regular: err == nil && fi.Mode().IsRegular()}
+	}()
+	select {
+	case o := <-done:
+		if o.regular {
+			t.Fatal("a FIFO was opened as a regular file")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("opening a FIFO waited for a writer")
+	}
+}
