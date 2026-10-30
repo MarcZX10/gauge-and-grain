@@ -14,7 +14,7 @@ jobs:
         with: { fetch-depth: 0, persist-credentials: false }
       - name: Release tags must point at main
         run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with: { go-version-file: go.mod }
       - run: go test ./...
   release:
@@ -34,7 +34,7 @@ jobs:
         with: { fetch-depth: 0, persist-credentials: false }
       - name: Release tags must point at main
         run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with: { go-version-file: go.mod }
       - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
         with: { cosign-release: 'v2.6.5' } # pinned: the action's default is older, and the sign-blob flags target cosign v2
