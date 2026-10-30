@@ -210,7 +210,6 @@ func TestOpenCodeReadErrorMidTableIsAnError(t *testing.T) {
 // and anything not named as a copy, stays.
 func TestOpenCodeStaleCopiesAreRemoved(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("TMPDIR", tmp)
 	old := time.Now().Add(-48 * time.Hour)
 	for _, d := range []string{"gg-sqlite-old", "other-old"} {
 		if err := os.MkdirAll(filepath.Join(tmp, d), 0o755); err != nil {
@@ -223,7 +222,7 @@ func TestOpenCodeStaleCopiesAreRemoved(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(tmp, "gg-sqlite-new"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	removeStaleCopies(time.Now())
+	removeStaleCopies(tmp, time.Now())
 	got := dirNames(t, tmp)
 	if strings.Join(got, ",") != "gg-sqlite-new,other-old" {
 		t.Errorf("after the sweep: %v", got)

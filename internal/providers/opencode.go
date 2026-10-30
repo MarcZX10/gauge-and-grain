@@ -228,10 +228,10 @@ const (
 	copyMaxAge    = 24 * time.Hour
 )
 
-// removeStaleCopies deletes copyDirPrefix directories in TMPDIR that are older
+// removeStaleCopies deletes copyDirPrefix directories in dir that are older
 // than copyMaxAge. Only directories with that prefix are touched.
-func removeStaleCopies(now time.Time) {
-	ents, err := os.ReadDir(os.TempDir())
+func removeStaleCopies(dir string, now time.Time) {
+	ents, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
@@ -240,7 +240,7 @@ func removeStaleCopies(now time.Time) {
 			continue
 		}
 		if fi, err := e.Info(); err == nil && now.Sub(fi.ModTime()) > copyMaxAge {
-			os.RemoveAll(filepath.Join(os.TempDir(), e.Name()))
+			os.RemoveAll(filepath.Join(dir, e.Name()))
 		}
 	}
 }
@@ -260,7 +260,7 @@ func openReadOnly(path string, size int64) (db *sql.DB, cleanup func(), err erro
 		if size > maxDBCopy {
 			return nil, cleanup, fmt.Errorf("database over %d MB with an active write-ahead log: close the tool and rescan", maxDBCopy>>20)
 		}
-		removeStaleCopies(time.Now())
+		removeStaleCopies(os.TempDir(), time.Now())
 		dir, derr := os.MkdirTemp("", copyDirPrefix)
 		if derr != nil {
 			return nil, cleanup, derr
