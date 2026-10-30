@@ -24,7 +24,7 @@ type Pi struct{}
 
 func (Pi) ID() string         { return "pi" }
 func (Pi) Name() string       { return "Pi Agent" }
-func (Pi) ParserVersion() int { return 1 }
+func (Pi) ParserVersion() int { return 2 } // 2: entry id key, no provider prefix
 func (Pi) Experimental() string {
 	return "parser follows Pi Agent's session format as documented by third-party readers; not verified against real logs"
 }
@@ -149,10 +149,9 @@ func (p *piParser) Line(line []byte) {
 			st.Malformed++
 			return
 		}
+		// The provider is not part of the name: Claude Code's claude-x and Pi's
+		// anthropic/claude-x are one model, and pricing strips prefixes anyway.
 		mdl := firstNonEmpty(m.Model, p.s.Model, "unknown")
-		if prov := firstNonEmpty(m.Provider, p.s.Provider); prov != "" && mdl != "unknown" {
-			mdl = prov + "/" + mdl
-		}
 		p.s.Provider, p.s.Model = firstNonEmpty(m.Provider, p.s.Provider), firstNonEmpty(m.Model, p.s.Model)
 		u := m.Usage
 		e := model.Event{Provider: "pi", Model: mdl, Session: p.s.Session, Project: p.s.CWD, Time: ts,
@@ -164,7 +163,12 @@ func (p *piParser) Line(line []byte) {
 		if u.CacheWrite != nil {
 			e.Has |= model.HasCacheWrite
 		}
+		// An entry's own id is unique, and it survives a fork under a new header.
+		// Entries without one fall back to the session and the time.
 		e.Key = "pi:" + p.s.Session + ":" + l.Timestamp + ":" + itoa(m.Timestamp) + ":" + itoa(e.Output)
+		if l.ID != "" {
+			e.Key = "pi:entry:" + l.ID
+		}
 		if i, ok := p.idx[e.Key]; ok {
 			p.evs[i].Merge(&e)
 			return

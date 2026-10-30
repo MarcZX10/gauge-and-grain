@@ -29,7 +29,7 @@ import (
 
 // schemaVersion invalidates every cache entry when the cached structures
 // (model.Event) change shape. Parser changes bump Provider.ParserVersion.
-const schemaVersion = 3
+const schemaVersion = 4 // 4: events outside the plausible time range are dropped (see sanitize)
 
 // fpLen is how many bytes at the start of a log, and just before the
 // resume point, are fingerprinted to prove the file only grew.
@@ -52,6 +52,7 @@ type Result struct {
 	Errors    []string       // unreadable files (never fatal)
 	Duplicate int            // records dropped as duplicates
 	Stale     int            // files served from an older parser's cache (AllowStale)
+	Skipped   int            // events dropped for a time outside 2015 .. tomorrow
 	Cancelled bool
 }
 
@@ -77,6 +78,7 @@ type entry struct {
 	Extra   uint64 // signature of the provider's other key files (SQLite -wal, side files)
 	Partial bool   // an unterminated last line was left unread (the file was still young)
 	Offset  int64  // bytes consumed: end of the last complete line
+	Skipped int    // events dropped by sanitize so far (carried over when resuming)
 	Head    []byte // hash of the first bytes
 	Tail    []byte // hash of the bytes just before Offset
 	State   []byte // parser state for resuming
@@ -132,14 +134,29 @@ func saveEntry(file string, e *entry) {
 	}
 }
 
+// earliestEvent is the first day a usage log can plausibly have.
+var earliestEvent = time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC)
+
 // sanitize bounds and cleans every string taken from a log before it is
-// cached, counted or printed (see model.Clean).
-func sanitize(evs []model.Event) {
+// cached, counted or printed (see model.Clean). It also drops events dated
+// before earliestEvent or after tomorrow: a year 9999 would make the daily
+// totals allocate millions of days. It returns the kept events and how many
+// were dropped.
+func sanitize(evs []model.Event, now time.Time) ([]model.Event, int) {
+	latest := now.Add(24 * time.Hour)
+	kept := evs[:0]
+	dropped := 0
 	for i := range evs {
 		e := &evs[i]
+		if e.Time.Before(earliestEvent) || e.Time.After(latest) {
+			dropped++
+			continue
+		}
 		e.Model, e.Session, e.Project = model.Clean(e.Model), model.Clean(e.Session), model.Clean(e.Project)
 		e.Key = model.BoundKey(e.Key)
+		kept = append(kept, *e)
 	}
+	return kept, dropped
 }
 
 // Run scans all providers. It stops promptly when ctx is cancelled; the
@@ -148,12 +165,20 @@ func sanitize(evs []model.Event) {
 func Run(ctx context.Context, o Options) *Result {
 	res := &Result{Files: map[string]int{}}
 	if o.CacheDir != "" {
-		_ = os.MkdirAll(o.CacheDir, 0o700)
-		_ = os.Chmod(o.CacheDir, 0o700) // a cache made by an older version was world-readable
+		// Only a directory this call creates is made private: GG_CACHE_DIR may
+		// point at one the user already owns (even ~), whose mode is theirs.
+		if _, err := os.Stat(o.CacheDir); os.IsNotExist(err) {
+			_ = os.MkdirAll(o.CacheDir, 0o700)
+		}
 	}
 	var jobs []job
+	var complete []providers.Provider // listings with no gaps: only these may prune
 	for _, p := range o.Providers {
+		gaps := providers.DiscoveryGaps()
 		fs := p.Files()
+		if providers.DiscoveryGaps() == gaps {
+			complete = append(complete, p)
+		}
 		res.Files[p.ID()] = len(fs)
 		for _, f := range fs {
 			jobs = append(jobs, job{p, f})
@@ -170,6 +195,11 @@ func Run(ctx context.Context, o Options) *Result {
 	}
 	out := make(chan finished)
 	merged := make(chan struct{})
+	n := max(2, runtime.NumCPU())
+	// Results are merged in job order, so a slow early file would let finished
+	// entries pile up behind it. A slot is taken per dispatched job and freed
+	// when its entry is merged, which caps the entries held at once.
+	slots := make(chan struct{}, 4*n)
 	go func() { // the only goroutine that touches res.Events / res.Stats / res.Duplicate
 		defer close(merged)
 		m := newMerger(res)
@@ -177,6 +207,9 @@ func Run(ctx context.Context, o Options) *Result {
 		next := 0
 		for f := range out {
 			pending[f.i] = f.e
+			if mergeHook != nil {
+				mergeHook(len(pending))
+			}
 			for {
 				e, ok := pending[next]
 				if !ok {
@@ -185,6 +218,7 @@ func Run(ctx context.Context, o Options) *Result {
 				delete(pending, next)
 				next++
 				m.add(e)
+				<-slots
 			}
 		}
 		// Cancelled: jobs that were never fed leave gaps; take what is left in order.
@@ -200,7 +234,6 @@ func Run(ctx context.Context, o Options) *Result {
 
 	work := make(chan int)
 	var wg sync.WaitGroup
-	n := max(2, runtime.NumCPU())
 	for w := 0; w < n; w++ {
 		wg.Add(1)
 		go func() {
@@ -244,6 +277,12 @@ feed:
 		case <-ctx.Done():
 			res.Cancelled = true
 			break feed
+		case slots <- struct{}{}:
+		}
+		select {
+		case <-ctx.Done():
+			res.Cancelled = true
+			break feed
 		case work <- i:
 		}
 	}
@@ -256,10 +295,14 @@ feed:
 	}
 	res.Cached, res.Parsed, res.Stale = int(cached.Load()), int(parsed.Load()), int(stale.Load())
 	if !res.Cancelled && o.CacheDir != "" {
-		prune(o.CacheDir, o.Providers, jobs)
+		prune(o.CacheDir, complete, jobs)
 	}
 	return res
 }
+
+// mergeHook, when set by a test, sees how many finished files wait for an
+// earlier one to merge.
+var mergeHook func(pending int)
 
 // merger folds per-file events into one de-duplicated list as files finish,
 // so decoded entries are released early instead of all being held at once.
@@ -271,12 +314,41 @@ feed:
 type merger struct {
 	res    *Result
 	seed   maphash.Seed
-	idx    map[uint64]int32
+	idx    map[uint64]int32 // hash of a key -> index of its event
+	keys   []string         // full key of each kept event, to rule out a hash collision
+	clash  map[string]int32 // events whose hash was already taken by another key
 	intern map[string]string
 }
 
+// keyHash is a variable so a test can force collisions.
+var keyHash = maphash.String
+
 func newMerger(res *Result) *merger {
-	return &merger{res: res, seed: maphash.MakeSeed(), idx: map[uint64]int32{}, intern: map[string]string{}}
+	return &merger{res: res, seed: maphash.MakeSeed(), idx: map[uint64]int32{}, clash: map[string]int32{}, intern: map[string]string{}}
+}
+
+// lookup returns the index of the kept event with this exact key.
+func (m *merger) lookup(key string) (int32, bool) {
+	at, ok := m.idx[keyHash(m.seed, key)]
+	if !ok {
+		return 0, false
+	}
+	if m.keys[at] == key {
+		return at, true
+	}
+	at, ok = m.clash[key] // the hash belongs to another call
+	return at, ok
+}
+
+// remember records the event at index at under its key.
+func (m *merger) remember(key string, at int32) {
+	h := keyHash(m.seed, key)
+	if _, taken := m.idx[h]; taken {
+		m.clash[key] = at
+	} else {
+		m.idx[h] = at
+	}
+	m.keys = append(m.keys, key)
 }
 
 // in cleans an untrusted string once (see model.Clean: this also covers cache
@@ -305,18 +377,18 @@ func (m *merger) add(e *entry) {
 	}
 	res := m.res
 	res.Stats.Add(e.Stats)
+	res.Skipped += e.Skipped
 	if res.Events == nil && len(e.Events) > 0 {
 		res.Events = make([]model.Event, 0, max(1024, len(e.Events)*4))
 	}
 	for k := range e.Events {
 		ev := e.Events[k]
-		h := maphash.String(m.seed, ev.Key)
-		if at, ok := m.idx[h]; ok {
+		if at, ok := m.lookup(ev.Key); ok {
 			res.Events[at].Merge(&ev)
 			res.Duplicate++
 			continue
 		}
-		m.idx[h] = int32(len(res.Events))
+		m.remember(ev.Key, int32(len(res.Events)))
 		ev.Key = ""
 		ev.Provider, ev.Model, ev.Session, ev.Project = m.in(ev.Provider), m.in(ev.Model), m.in(ev.Session), m.in(ev.Project)
 		res.Events = append(res.Events, ev)
@@ -326,8 +398,10 @@ func (m *merger) add(e *entry) {
 // cacheName matches the cache files gg itself writes.
 var cacheName = regexp.MustCompile(`^[a-z0-9]+-[0-9a-f]{24}\.gob$`)
 
-// prune deletes cache entries of the scanned providers whose log no longer
+// prune deletes cache entries of the given providers whose log no longer
 // exists (a tool rotated or removed it), so the cache cannot grow forever.
+// Only providers whose listing was complete are passed in: an unmounted
+// drive must not look like every log having been removed.
 func prune(dir string, ps []providers.Provider, jobs []job) {
 	live := map[string]bool{}
 	for _, j := range jobs {
@@ -424,7 +498,11 @@ func processFile(ctx context.Context, j job, cacheDir string, allowStale bool) (
 				if unchanged && !(c.Partial && time.Since(st.ModTime()) > idleAfter) {
 					return c, true, nil
 				}
-				prev = c
+				// A changed key file (a model recorded beside the log) makes the
+				// old state wrong even though the log did not grow: start over.
+				if c.Extra == sig {
+					prev = c
+				}
 			} else if allowStale {
 				// Written by an older parser. An unchanged log's usage is still
 				// right, so it is served now, marked stale (Options.AllowStale).
@@ -443,12 +521,12 @@ func processFile(ctx context.Context, j job, cacheDir string, allowStale bool) (
 	if pr, ok := j.p.(providers.PathReader); ok && pr.ReadsPath(j.path) {
 		return pathReader(ctx, j, pr, st, sig, cp)
 	}
-	f, err := os.Open(j.path)
+	f, err := openLog(j.path)
 	if err != nil {
 		return nil, false, err
 	}
 	defer f.Close()
-	if fst, err := f.Stat(); err != nil || !fst.Mode().IsRegular() {
+	if fst, err := f.Stat(); err != nil || !fst.Mode().IsRegular() { // the path may have changed since the stat
 		return nil, false, errors.New("not a regular file")
 	}
 	if c := staleC; allowStale && c != nil && c.Offset > 0 && c.Offset <= st.Size() &&
@@ -462,11 +540,13 @@ func processFile(ctx context.Context, j job, cacheDir string, allowStale bool) (
 	}
 	var resume *providers.Resume
 	var start int64
+	var carried int // events the resumed entry had already dropped
 	if prev != nil && prev.Offset > 0 && prev.Offset <= st.Size() &&
 		eq(prev.Head, fingerprint(f, 0, min(fpLen, prev.Offset))) &&
 		eq(prev.Tail, fingerprint(f, max(0, prev.Offset-fpLen), min(fpLen, prev.Offset))) {
 		resume = &providers.Resume{Events: prev.Events, Stats: prev.Stats, State: prev.State}
 		start = prev.Offset
+		carried = prev.Skipped
 	}
 	if _, err := f.Seek(start, 0); err != nil {
 		return nil, false, err
@@ -481,9 +561,18 @@ func processFile(ctx context.Context, j job, cacheDir string, allowStale bool) (
 	evs, stats := ps.Result()
 	stats.Oversized += rs.Oversized
 	off := start + n
-	sanitize(evs)
+	// An idle file's unterminated last line was consumed above, but its writer
+	// may still finish it. Resuming from past it would parse the rest of the
+	// line as garbage, so the entry is not resumable: the next growth re-reads it.
+	var last [1]byte
+	if idle && n > 0 && off > 0 {
+		if _, err := f.ReadAt(last[:], off-1); err == nil && last[0] != '\n' {
+			off = 0
+		}
+	}
+	evs, dropped := sanitize(evs, time.Now())
 	e := &entry{Schema: schemaVersion, Parser: j.p.ParserVersion(), Size: st.Size(), ModNano: st.ModTime().UnixNano(), Extra: sig,
-		Partial: !idle && off < st.Size(), Offset: off, State: ps.State(), Events: evs, Stats: stats}
+		Partial: !idle && off < st.Size(), Offset: off, State: ps.State(), Events: evs, Stats: stats, Skipped: carried + dropped}
 	e.Head = fingerprint(f, 0, min(fpLen, off))
 	e.Tail = fingerprint(f, max(0, off-fpLen), min(fpLen, off))
 	if cp != "" {
@@ -499,8 +588,8 @@ func pathReader(ctx context.Context, j job, pr providers.PathReader, st os.FileI
 	if err != nil {
 		return nil, false, err
 	}
-	sanitize(evs)
-	e := &entry{Schema: schemaVersion, Parser: j.p.ParserVersion(), Size: st.Size(), ModNano: st.ModTime().UnixNano(), Extra: sig, Events: evs, Stats: stats}
+	evs, dropped := sanitize(evs, time.Now())
+	e := &entry{Schema: schemaVersion, Parser: j.p.ParserVersion(), Size: st.Size(), ModNano: st.ModTime().UnixNano(), Extra: sig, Events: evs, Stats: stats, Skipped: dropped}
 	if cp != "" {
 		saveEntry(cp, e)
 	}
@@ -515,22 +604,28 @@ const maxWholeFile = 256 << 20
 func wholeFile(ctx context.Context, j job, f *os.File, st os.FileInfo, sig uint64, cp string) (*entry, bool, error) {
 	ps := j.p.NewParser(j.path, nil)
 	var over model.ParseStats
-	data, err := io.ReadAll(io.LimitReader(&ctxReader{ctx, f}, maxWholeFile+1))
-	if err != nil {
-		return nil, false, err
-	}
-	if len(data) > maxWholeFile {
-		data = nil
-		over.Oversized++
+	var data []byte
+	if st.Size() > maxWholeFile {
+		over.Oversized++ // known from the size: never read
+	} else {
+		var err error
+		data, err = io.ReadAll(io.LimitReader(&ctxReader{ctx, f}, maxWholeFile+1))
+		if err != nil {
+			return nil, false, err
+		}
+		if len(data) > maxWholeFile { // grew while it was read
+			data = nil
+			over.Oversized++
+		}
 	}
 	if t := bytes.TrimSpace(data); len(t) > 0 {
 		ps.Line(t)
 	}
 	evs, stats := ps.Result()
 	stats.Oversized += over.Oversized
-	sanitize(evs)
+	evs, dropped := sanitize(evs, time.Now())
 	// Offset 0: a changed document is always re-read in full, never resumed.
-	e := &entry{Schema: schemaVersion, Parser: j.p.ParserVersion(), Size: st.Size(), ModNano: st.ModTime().UnixNano(), Extra: sig, Events: evs, Stats: stats}
+	e := &entry{Schema: schemaVersion, Parser: j.p.ParserVersion(), Size: st.Size(), ModNano: st.ModTime().UnixNano(), Extra: sig, Events: evs, Stats: stats, Skipped: dropped}
 	if cp != "" {
 		saveEntry(cp, e)
 	}

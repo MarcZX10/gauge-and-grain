@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync/atomic"
 
 	"github.com/MarcZX10/gauge-and-grain/internal/model"
 )
@@ -248,7 +249,26 @@ func existingDirs(c []string) []string {
 		if st, err := os.Stat(d); err == nil && st.IsDir() && !seen[d] { // Stat follows a symlinked root
 			seen[d] = true
 			out = append(out, d)
+		} else if err != nil && isDeadLink(d) {
+			gaps.Add(1)
 		}
 	}
+	if len(out) == 0 && len(c) > 0 {
+		gaps.Add(1) // every candidate root is missing: an unmounted drive looks like this too
+	}
 	return out
+}
+
+// gaps counts discovery problems: roots that are missing or dead, and
+// subtrees that could not be read. The scanner compares it before and after
+// a provider's Files call to learn whether that listing was complete.
+var gaps atomic.Int64
+
+// DiscoveryGaps returns the number of discovery problems seen so far. It only
+// grows, so a caller compares two readings around a Files call.
+func DiscoveryGaps() int64 { return gaps.Load() }
+
+func isDeadLink(p string) bool {
+	fi, err := os.Lstat(p)
+	return err == nil && fi.Mode()&os.ModeSymlink != 0
 }

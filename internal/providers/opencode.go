@@ -47,7 +47,7 @@ var opencodeFamily = []OpenCodeFamily{
 
 func (o OpenCodeFamily) ID() string         { return o.id }
 func (o OpenCodeFamily) Name() string       { return o.name }
-func (o OpenCodeFamily) ParserVersion() int { return 1 }
+func (o OpenCodeFamily) ParserVersion() int { return 2 } // 2: read errors are errors, not partial totals
 func (o OpenCodeFamily) Experimental() string {
 	return "parser follows OpenCode's database/message format as documented by third-party readers; not verified against a real installation"
 }
@@ -212,10 +212,38 @@ func (p *ocJSONParser) Line(doc []byte) {
 // that processes untrusted repositories, so it is treated as untrusted too.
 const (
 	maxDBSize  = 8 << 30         // larger databases are skipped and counted
-	maxDBCopy  = 1 << 30         // largest database copied to read it next to an active -wal
 	maxRowData = 8 << 20         // a message or part row larger than this is skipped
 	dbTimeout  = 3 * time.Minute // a query (or a runaway view) is cancelled after this
 )
+
+// maxDBCopy is the largest database (or -wal) copied to read it next to an
+// active -wal. A variable so tests can lower it.
+var maxDBCopy int64 = 1 << 30
+
+// copyDirPrefix names the temporary copies made by openReadOnly; copyMaxAge
+// is how long one may stay in TMPDIR before a later copy removes it (a crash
+// leaves it behind, with prompts and replies in it).
+const (
+	copyDirPrefix = "gg-sqlite-"
+	copyMaxAge    = 24 * time.Hour
+)
+
+// removeStaleCopies deletes copyDirPrefix directories in dir that are older
+// than copyMaxAge. Only directories with that prefix are touched.
+func removeStaleCopies(dir string, now time.Time) {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range ents {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), copyDirPrefix) {
+			continue
+		}
+		if fi, err := e.Info(); err == nil && now.Sub(fi.ModTime()) > copyMaxAge {
+			os.RemoveAll(filepath.Join(dir, e.Name()))
+		}
+	}
+}
 
 // openReadOnly opens a SQLite database without ever writing next to it.
 //
@@ -232,7 +260,8 @@ func openReadOnly(path string, size int64) (db *sql.DB, cleanup func(), err erro
 		if size > maxDBCopy {
 			return nil, cleanup, fmt.Errorf("database over %d MB with an active write-ahead log: close the tool and rescan", maxDBCopy>>20)
 		}
-		dir, derr := os.MkdirTemp("", "gg-sqlite-")
+		removeStaleCopies(os.TempDir(), time.Now())
+		dir, derr := os.MkdirTemp("", copyDirPrefix)
 		if derr != nil {
 			return nil, cleanup, derr
 		}
@@ -269,6 +298,8 @@ func openReadOnly(path string, size int64) (db *sql.DB, cleanup func(), err erro
 	return db, func() { db.Close(); rm() }, nil
 }
 
+// copyFile copies src to dst. A source over maxDBCopy is an error, not a
+// truncated copy: a cut-short log would read as a database missing its newest rows.
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -279,7 +310,11 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	if _, err = io.Copy(out, io.LimitReader(in, maxDBCopy+1)); err != nil {
+	n, err := io.Copy(out, io.LimitReader(in, maxDBCopy+1))
+	if err == nil && n > maxDBCopy {
+		err = fmt.Errorf("%s is over %d MB: close the tool and rescan", filepath.Base(src), maxDBCopy>>20)
+	}
+	if err != nil {
 		out.Close()
 		return err
 	}
@@ -317,7 +352,13 @@ func (o OpenCodeFamily) ParsePath(ctx context.Context, path string) ([]model.Eve
 				projects[sid] = wt.String
 			}
 		}
+		// A read error part way through must not leave partial totals behind:
+		// the scan would cache them as complete.
+		err = rows.Err()
 		rows.Close()
+		if err != nil {
+			return nil, st, err
+		}
 	}
 	steps := map[string]*ocTokens{} // message id -> summed step-finish tokens
 	if rows, err := db.QueryContext(ctx, "SELECT message_id, data FROM part WHERE length(data) <= ? AND json_extract(data, '$.type') = 'step-finish'", maxRowData); err == nil {
@@ -335,7 +376,11 @@ func (o OpenCodeFamily) ParsePath(ctx context.Context, path string) ([]model.Eve
 			}
 			steps[id] = addOC(steps[id], part.Tokens)
 		}
+		err = rows.Err()
 		rows.Close()
+		if err != nil {
+			return nil, st, err
+		}
 	}
 
 	rows, err := db.QueryContext(ctx, "SELECT id, session_id, time_created, CASE WHEN length(data) <= ? THEN data END FROM message", maxRowData)

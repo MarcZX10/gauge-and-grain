@@ -577,3 +577,84 @@ func TestDayDrillComparesWithTheDayBefore(t *testing.T) {
 		t.Error("the day drill should still show a comparison")
 	}
 }
+
+// A frame on the Sessions list must stay well under a frame interval even
+// with thousands of sessions: pointer motion redraws, and key and wheel input
+// queue behind every frame. Each frame formats only the rows on screen.
+func TestSessionsFrameIsFastWithManySessions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("large history")
+	}
+	if raceEnabled {
+		t.Skip("wall-clock limits do not apply under the race detector; the normal run checks them")
+	}
+	newModel := func() *model_ {
+		m := manySessionsModel(5000)
+		resize(m, 150, 46)
+		press(m, "6") // Sessions
+		return m
+	}
+	// The fastest of three passes, as in the other timing test: a stall on a
+	// shared machine cannot make all three slow.
+	const limit = 50 * time.Millisecond
+	best := time.Duration(0)
+	for pass := 0; pass < 3; pass++ {
+		m := newModel()
+		var total time.Duration
+		for i := 0; i < 20; i++ { // pointer motion over the rows, one frame each
+			m.Update(tea.MouseMsg{X: 10, Y: bodyTop + 3 + i, Action: tea.MouseActionMotion, Button: tea.MouseButtonNone})
+			start := time.Now()
+			_ = m.View()
+			total += time.Since(start)
+		}
+		if avg := total / 20; best == 0 || avg < best {
+			best = avg
+		}
+	}
+	t.Logf("sessions frame with 5000 sessions: %v per frame (average of 20 motion frames, fastest of 3 passes)", best)
+	if best > limit {
+		t.Errorf("a frame took %v on 5000 sessions (limit %v)", best, limit)
+	}
+}
+
+// manySessionsModel is a dashboard over n sessions, one call each, for the
+// tests that need a list longer than the screen.
+func manySessionsModel(n int) *model_ {
+	pt, _ := pricing.Load("")
+	var evs []model.Event
+	for i := 0; i < n; i++ {
+		evs = append(evs, model.Event{Provider: "claude", Model: "claude-sonnet-5-5", Project: fmt.Sprint("/w/p", i%30),
+			Session: fmt.Sprint("s", i), Time: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(i) * time.Minute),
+			Input: 10, CacheRead: 100, Output: 5, Has: model.HasCacheRead})
+	}
+	res := &scan.Result{Events: evs, Files: map[string]int{"claude": 1}}
+	m := &model_{cfg: Config{Prices: pt, Theme: render.Theme{Color: true}, Loc: time.UTC, Detect: map[string]providers.Detection{},
+		Providers: []providers.Provider{providers.Claude{}}}, res: res, events: evs, idx: agg.NewIndex(evs, pt, time.UTC),
+		per: periodState{preset: presetIndex("all")}}
+	m.applyPeriod()
+	return m
+}
+
+// The cursor stays drawn on screen, after a resize to a shorter terminal too.
+func TestCursorStaysOnScreen(t *testing.T) {
+	m := manySessionsModel(200)
+	resize(m, 120, 40)
+	press(m, "6")
+	m.cursor[tabSessions] = 30
+	m.View()
+	resize(m, 120, 20)
+	v := render.Strip(m.View())
+	vis := m.geometry().vis
+	if c, o := m.cursor[tabSessions], m.offset[tabSessions]; c < o || c >= o+vis {
+		t.Fatalf("cursor %d outside the %d visible rows from %d", c, vis, o)
+	}
+	marked := ""
+	for _, l := range strings.Split(v, "\n") {
+		if strings.Contains(l, "›") {
+			marked = l
+		}
+	}
+	if label := m.groups()[m.cursor[tabSessions]].Label; !strings.Contains(marked, label) {
+		t.Errorf("the selected row %q must be drawn with its marker:\n%s", label, v)
+	}
+}

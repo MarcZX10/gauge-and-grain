@@ -225,6 +225,14 @@ func main() {
 	if daysSet && rangeSet { // one period at a time: never silently ignore one of them
 		die(errors.New("--days cannot be combined with --from, --to or --all"))
 	}
+	fs.Visit(func(f *flag.Flag) { // the export-only flags must not be silently ignored elsewhere
+		switch {
+		case f.Name == "format" && cmd != "export":
+			die(errors.New("--format only applies to `gg export` (see `gg help`)"))
+		case f.Name == "by" && (cmd != "export" || o.format != "csv"):
+			die(errors.New("--by only applies to `gg export --format csv` (see `gg help`)"))
+		}
+	})
 	if fs.NArg() > 0 {
 		die(fmt.Errorf("unexpected argument %q", fs.Arg(0)))
 	}
@@ -256,8 +264,8 @@ func sayn(a ...any)                { printOut(fmt.Sprint(a...)) }
 
 func theme(o *opts, f *os.File) render.Theme {
 	color := isatty.IsTerminal(f.Fd()) || isatty.IsCygwinTerminal(f.Fd())
-	if os.Getenv("FORCE_COLOR") != "" {
-		color = true
+	if v := os.Getenv("FORCE_COLOR"); v != "" { // 0 and false mean off, as in common tools
+		color = v != "0" && v != "false"
 	}
 	if o.noColor || os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
 		color = false
@@ -484,7 +492,7 @@ func scanWithProgress(ctx context.Context, provs []providers.Provider, cacheDir 
 			return
 		}
 		last = time.Now()
-		fmt.Fprintf(os.Stderr, "\r\x1b[2Kscanning %d/%d files · %s read   (Ctrl-C to cancel)", p.Done, p.Total, render.Tokens(p.Bytes/1000)+"B")
+		fmt.Fprintf(os.Stderr, "\r\x1b[2Kscanning %d/%d files · %s read   (Ctrl-C to cancel)", p.Done, p.Total, render.Bytes(p.Bytes))
 	}
 	res := scan.Run(ctx, scan.Options{Providers: provs, CacheDir: cacheDir, Progress: progress})
 	if show {

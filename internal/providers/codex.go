@@ -29,7 +29,7 @@ type Codex struct{}
 
 func (Codex) ID() string         { return "codex" }
 func (Codex) Name() string       { return "OpenAI Codex" }
-func (Codex) ParserVersion() int { return 3 } // 3: tool calls
+func (Codex) ParserVersion() int { return 4 } // 4: call items routed first, local_shell; 3: tool calls
 func (Codex) Fields() Fields {
 	return Fields{CacheRead: true, CacheWrite: true, Reasoning: true,
 		Note: "cache writes are not billed separately by OpenAI"}
@@ -183,14 +183,16 @@ func (p *codexParser) Result() ([]model.Event, model.ParseStats) { return p.evs,
 
 func (p *codexParser) Line(line []byte) {
 	st := &p.st
+	// Call items are taken first: a call's arguments can name the words the
+	// lines below are matched by (token_count, for instance).
+	if bytes.Contains(line[:min(len(line), 256)], cxCall) && p.addCall(line) {
+		return
+	}
 	isRec := bytes.Contains(line, cxRecord)
 	isCount := bytes.Contains(line, cxCount)
 	isMeta := bytes.Contains(line, cxMeta)
 	isTurn := bytes.Contains(line, cxTurn)
 	if !isRec && !isCount && !isMeta && !isTurn {
-		if bytes.Contains(line[:min(len(line), 256)], cxCall) {
-			p.addCall(line)
-		}
 		return
 	}
 	st.Lines++
@@ -285,27 +287,34 @@ type codexCall struct {
 	} `json:"payload"`
 }
 
-// addCall records one tool call as a pending use. Calls with no id or no
-// name cannot be counted once, so they are skipped.
-func (p *codexParser) addCall(line []byte) {
+// addCall records one tool call as a pending use and reports whether the line
+// is a call item at all. Calls with no id cannot be counted once, so they are
+// skipped.
+func (p *codexParser) addCall(line []byte) bool {
 	var c codexCall
 	if json.Unmarshal(line, &c) != nil {
-		return
+		return false
 	}
 	var entry string
 	switch c.Payload.Type {
 	case "function_call", "custom_tool_call":
 		if c.Payload.CallID == "" || c.Payload.Name == "" {
-			return
+			return true
 		}
 		entry = model.ToolEntry(c.Payload.CallID, c.Payload.Name)
+	case "local_shell_call":
+		if c.Payload.CallID == "" {
+			return true
+		}
+		entry = model.ToolEntry(c.Payload.CallID, "local_shell")
 	case "web_search_call", "tool_search_call":
 		// no call id in these records: the time stands in for it
 		entry = model.ToolEntry("ws:"+c.Timestamp, strings.TrimSuffix(c.Payload.Type, "_call"))
 	default:
-		return
+		return false
 	}
 	p.s.Pending = append(p.s.Pending, entry)
+	return true
 }
 
 // takePending hands the pending calls to the usage event being emitted.

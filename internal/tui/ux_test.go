@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -298,5 +299,263 @@ func TestStaleResultShowsAtOnceAndRefreshesOnce(t *testing.T) {
 	_, cmd = m.Update(doneMsg(&again))
 	if cmd != nil {
 		t.Error("the full scan runs once per session, not in a loop")
+	}
+}
+
+// With no usage in the filter, the Daily view draws its calendar panel
+// without indexing the empty day list.
+func TestDailyWithNoDataDoesNotPanic(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	press(m, "2")
+	m.filter.Text = "no-such-model-anywhere"
+	m.recompute()
+	if len(m.sum.ByDay) != 0 || m.geometry().heatH == 0 {
+		t.Fatalf("the test needs an empty Daily view with the calendar: days=%d heatH=%d", len(m.sum.ByDay), m.geometry().heatH)
+	}
+	if v := m.View(); !strings.Contains(v, "no data") {
+		t.Errorf("an empty Daily view must say so:\n%s", render.Strip(v))
+	}
+}
+
+// A background refresh keeps the place in the table: the cursor stays on its row.
+func TestBackgroundRefreshKeepsTheCursor(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	press(m, "4", "down")
+	if m.cursor[tabModels] != 1 {
+		t.Fatalf("the test needs the cursor on row 1, got %d", m.cursor[tabModels])
+	}
+	m.Update(doneMsg(m.res))
+	if m.cursor[tabModels] != 1 {
+		t.Errorf("a refresh must keep the cursor: got %d", m.cursor[tabModels])
+	}
+}
+
+// A day drill is kept by a refresh, and a period change is what ends it.
+func TestDayDrillSurvivesARefresh(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	press(m, "2", "enter") // Daily, drill into the latest day
+	day := m.filter.From
+	if day.IsZero() || len(m.drill) != 1 {
+		t.Fatalf("the test needs a day drill: drill=%v", m.drill)
+	}
+	m.Update(doneMsg(m.res))
+	if !m.filter.From.Equal(day) || !m.filter.To.Equal(day.AddDate(0, 0, 1)) || len(m.drill) != 1 {
+		t.Errorf("a refresh must keep the day drill: from=%v drill=%v", m.filter.From, m.drill)
+	}
+	press(m, "d") // a quick period replaces the day
+	if len(m.drill) != 0 || m.filter.From.Equal(day) {
+		t.Errorf("a period change must end the day drill: drill=%v from=%v", m.drill, m.filter.From)
+	}
+}
+
+// Esc during a background refresh cancels it instead of going back, and the
+// cancelled scan starts no follow-up scan and does not replace the view.
+func TestEscCancelsARefreshWithoutANewScan(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	press(m, "4")
+	_, cmd := m.Update(refreshMsg{})
+	if cmd == nil || !m.refreshing || m.loading {
+		t.Fatalf("the test needs a background refresh: refreshing=%v loading=%v", m.refreshing, m.loading)
+	}
+	cancelled := false
+	real := m.cancel
+	m.cancel = func() { cancelled = true; real() }
+	_, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if !cancelled || cmd != nil || m.tab != tabModels {
+		t.Errorf("Esc during a refresh must cancel it and not go back: cancelled=%v tab=%d", cancelled, m.tab)
+	}
+	c := *m.res
+	c.Cancelled = true
+	_, cmd = m.Update(doneMsg(&c))
+	if cmd != nil {
+		t.Error("a cancelled refresh must not start another scan")
+	}
+	if m.refreshing || strings.Contains(m.status(), "PARTIAL") {
+		t.Errorf("a cancelled refresh ends quietly: refreshing=%v status=%q", m.refreshing, m.status())
+	}
+}
+
+// A cancelled first scan with stale files starts no full rescan.
+func TestCancelledFirstScanStartsNoFollowUp(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	stale := *m.res
+	stale.Stale, stale.Cancelled = 2, true
+	m.loading = true
+	_, cmd := m.Update(doneMsg(&stale))
+	if cmd != nil || m.refreshing {
+		t.Errorf("a cancelled scan must not start the follow-up: cmd=%v refreshing=%v", cmd != nil, m.refreshing)
+	}
+}
+
+// Back from a provider drill returns to the provider the view showed before it,
+// not to "all providers".
+func TestBackRestoresTheProviderFilter(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	press(m, "p", "p", "3") // Claude, then Codex, then Providers: only Codex is listed
+	if m.provIdx != 2 || len(m.groups()) != 1 {
+		t.Fatalf("the test needs the Codex filter: provIdx=%d rows=%d", m.provIdx, len(m.groups()))
+	}
+	press(m, "enter", "esc")
+	if m.provIdx != 2 || len(m.drill) != 0 {
+		t.Errorf("Esc from a provider drill must restore the Codex filter: provIdx=%d drill=%v", m.provIdx, m.drill)
+	}
+	press(m, "c", "3", "enter", "esc") // from all providers, the same drill returns to all
+	if m.provIdx != 0 {
+		t.Errorf("Esc must return to all providers when the drill started there: provIdx=%d", m.provIdx)
+	}
+}
+
+// Two scans in a row: a result from the replaced one must not end the newer one.
+func TestOlderScanResultsAreIgnored(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	m.loading = true
+	m.startScan(false)
+	older := m.seq
+	m.startScan(false)
+	if m.seq != older+1 {
+		t.Fatalf("each scan gets its own number: %d then %d", older, m.seq)
+	}
+	m.Update(scanMsg{older, doneMsg(m.res)})
+	if !m.loading {
+		t.Error("a result from a replaced scan must not end the newer scan")
+	}
+	m.Update(scanMsg{m.seq, doneMsg(m.res)})
+	if m.loading {
+		t.Error("the newest scan's result must end the load")
+	}
+}
+
+// The cost change against the previous period is shown only when both periods
+// are fully priced; an unpriced previous period is "n/a", not a change.
+func TestCostChangeNeedsACompletePreviousPeriod(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	m.filter.Providers = []string{"codex"} // every codex model has a price: the total is complete
+	m.applyPeriod()
+	if !m.sum.Total.Complete() {
+		t.Fatal("the test needs a complete total")
+	}
+	m.sum.Prev = &agg.Group{Input: 1000, Cost: 1, PricedTok: 500, UnpricedTok: 500}
+	m.ver++
+	if out := render.Strip(strings.Join(m.overviewLines(), "\n")); !strings.Contains(out, "n/a vs") {
+		t.Errorf("an unpriced previous period must not give a change:\n%s", out)
+	}
+	m.sum.Prev = &agg.Group{Input: 1000, Cost: 1, PricedTok: 1000}
+	m.ver++
+	if out := render.Strip(strings.Join(m.overviewLines(), "\n")); !strings.Contains(out, "estimate") {
+		t.Errorf("two priced periods must show the change:\n%s", out)
+	}
+}
+
+// The space key types exactly one space, in the search box and in the period picker.
+func TestSpaceTypesOneSpace(t *testing.T) {
+	space := tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}}
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	press(m, "/")
+	m.Update(space)
+	press(m, "x")
+	if m.input != " x" {
+		t.Errorf("search must take the space: %q", m.input)
+	}
+	press(m, "esc", "t", "7")
+	m.Update(space)
+	press(m, "d")
+	if m.pickIn != "7 d" {
+		t.Errorf("the picker must insert one space: %q", m.pickIn)
+	}
+}
+
+// "e" exports only the tables. On the text tabs it writes nothing and says why.
+func TestExportNeedsATable(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	t.Chdir(t.TempDir())
+	press(m, "o", "e")
+	press(m, "n", "e")
+	files, _ := filepath.Glob("gg-*.csv")
+	if len(files) != 0 || !strings.Contains(m.note, "nothing to export") {
+		t.Errorf("the text tabs must write nothing: note=%q files=%v", m.note, files)
+	}
+	if !strings.Contains(render.Strip(strings.Join(m.helpView(), "\n")), "Daily to Sessions") {
+		t.Error("the help must say which tabs export")
+	}
+}
+
+// A planted temp file next to the preferences is not written through, and
+// saves do not collide with each other.
+func TestPreferencesSaveIgnoresTempFiles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tui.json")
+	victim := filepath.Join(dir, "victim")
+	os.WriteFile(victim, []byte("keep"), 0o600)
+	os.Symlink(victim, path+".tmp")
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	m.cfg.Prefs = path
+	m.savePrefs()
+	m.savePrefs()
+	if b, _ := os.ReadFile(victim); string(b) != "keep" {
+		t.Errorf("a save must not write through a planted symlink: %q", b)
+	}
+	b, _ := os.ReadFile(path)
+	var p prefs
+	if json.Unmarshal(b, &p) != nil {
+		t.Errorf("preferences file after two saves: %q", b)
+	}
+}
+
+// A loading box in a terminal of the minimum height still fits on screen.
+func TestLoadingBoxFitsAShortTerminal(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	m.loading = true
+	for _, h := range []int{minH, 9, 12, 40} {
+		resize(m, 80, h)
+		if rows := strings.Count(m.View(), "\n") + 1; rows > h {
+			t.Errorf("loading view at height %d has %d rows", h, rows)
+		}
+	}
+}
+
+// In ASCII mode no line passes the terminal width, panels keep their width
+// and their right border on every tab, at every terminal width: a glyph that
+// grows when it is folded must not push a line past its panel.
+func TestAsciiPanelsKeepTheirBorders(t *testing.T) {
+	m := fixtureModel(t, render.Theme{})
+	for w := 40; w <= 120; w++ {
+		resize(m, w, 30)
+		overlays := []string{""}
+		if w%10 == 0 { // the help and the picker are the wider overlays: a few widths are enough
+			overlays = append(overlays, "help", "picker")
+		}
+		for _, overlay := range overlays {
+			for tab := 0; tab < numTabs; tab++ {
+				m.tab, m.help, m.picker = tab, overlay == "help", overlay == "picker"
+				m.cfg.Theme = render.Theme{}
+				m.ver++
+				uni := strings.Split(render.Strip(m.View()), "\n")
+				m.cfg.Theme = render.Theme{ASCII: true}
+				m.ver++
+				asc := strings.Split(render.Strip(m.View()), "\n")
+				if len(uni) != len(asc) {
+					t.Fatalf("width %d tab %d %s: %d lines in ASCII, %d in Unicode", w, tab, overlay, len(asc), len(uni))
+				}
+				for i := range uni {
+					ur, _ := utf8.DecodeLastRuneInString(uni[i])
+					ar, _ := utf8.DecodeLastRuneInString(asc[i])
+					uw, aw := render.Width(uni[i]), render.Width(asc[i])
+					full := uw == w // a panel row or a full-width line
+					if aw > w || full && aw != w || strings.ContainsRune("│┃╮╯", ur) && !strings.ContainsRune("|+#", ar) {
+						t.Fatalf("width %d tab %d %s line %d:\nASCII   %q (%d)\nUnicode %q (%d)", w, tab, overlay, i, asc[i], aw, uni[i], uw)
+					}
+				}
+			}
+		}
 	}
 }

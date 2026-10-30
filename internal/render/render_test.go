@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -219,5 +221,213 @@ func TestCompactStaysQuietWhenNothingNeedsAttention(t *testing.T) {
 	out := strings.Join(Compact(Theme{ASCII: true}, c, 100), "\n")
 	if strings.Contains(out, "attention") {
 		t.Errorf("no warning, no pointer:\n%s", out)
+	}
+}
+
+// An unpriced previous period must not produce a cost change: the previous
+// total is a lower bound, so any percentage would be invented.
+func TestCostChangeNotShownAgainstIncompletePrevious(t *testing.T) {
+	pt, _ := pricing.Load("")
+	d := func(day int) time.Time { return time.Date(2026, 10, day, 12, 0, 0, 0, time.UTC) }
+	evs := []model.Event{
+		{Provider: "codex", Model: "codex-auto-review", Session: "old", Project: "/work/a", Time: d(2), Input: 1000000, Output: 100},
+		{Provider: "claude", Model: "claude-sonnet-5-5", Session: "old2", Project: "/work/a", Time: d(3), Input: 10, Output: 10},
+		{Provider: "claude", Model: "claude-sonnet-5-5", Session: "new", Project: "/work/a", Time: d(9), Input: 1000, Output: 100},
+	}
+	f := agg.Filter{From: time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC), To: time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)}
+	c := &Ctx{Sum: agg.Summarize(evs, f, pt, time.UTC), Prices: pt, RangeName: "last 7 days"}
+	if c.Sum.Prev == nil || c.Sum.Prev.Complete() || !c.Sum.Total.Complete() {
+		t.Fatalf("fixture: want complete current and incomplete previous, got prev=%+v", c.Sum.Prev)
+	}
+	th := Theme{}
+	for _, l := range Overview(th, c, 100) {
+		if strings.HasPrefix(Strip(l), "Est. cost") {
+			if !strings.Contains(l, "n/a") || strings.ContainsAny(l, "▲▼■") {
+				t.Errorf("cost line must say n/a and carry no change arrow: %q", Strip(l))
+			}
+		}
+	}
+	first := strings.Split(Compact(th, c, 100)[0], "  ·  ")[1]
+	if !strings.Contains(first, "n/a") || strings.ContainsAny(first, "▲▼■") {
+		t.Errorf("compact cost must say n/a and carry no change arrow: %q", first)
+	}
+}
+
+// failWriter rejects every write, so a buffered CSV only notices at flush time.
+type failWriter struct{}
+
+func (failWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
+
+func TestCSVReturnsFlushError(t *testing.T) {
+	c := sample(t)
+	evs := []model.Event{{Provider: "claude", Model: "claude-sonnet-5-5", Time: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), Input: 1}}
+	for _, by := range []string{"model", "events"} {
+		if err := CSV(failWriter{}, c, by, evs, &agg.Filter{}); err == nil {
+			t.Errorf("--by %s: write failure in the buffered output must be returned", by)
+		}
+	}
+}
+
+func TestJSONMarksCancelledExportAsPartial(t *testing.T) {
+	for _, cancelled := range []bool{false, true} {
+		c := sample(t)
+		c.Cancelled = cancelled
+		var b bytes.Buffer
+		if err := JSON(&b, c); err != nil {
+			t.Fatal(err)
+		}
+		var d struct {
+			Partial bool   `json:"partial"`
+			Reason  string `json:"partial_reason"`
+		}
+		if err := json.Unmarshal(b.Bytes(), &d); err != nil {
+			t.Fatal(err)
+		}
+		if d.Partial != cancelled || (cancelled && d.Reason == "") || (!cancelled && d.Reason != "") {
+			t.Errorf("cancelled=%v: partial=%v reason=%q", cancelled, d.Partial, d.Reason)
+		}
+	}
+}
+
+// Day rows cover the whole window, zero-usage days included: the active
+// count is the rows with tokens, the total is every row.
+func TestDailyCountsActiveDaysOutOfAllRows(t *testing.T) {
+	var days []*agg.Group
+	for i := 1; i <= 7; i++ {
+		g := &agg.Group{Key: fmt.Sprintf("2026-10-%02d", i), Label: fmt.Sprintf("2026-10-%02d", i), Unpriced: map[string]int64{}}
+		if i == 1 || i == 4 || i == 7 { // usage on 3 of 7 days
+			g.Input, g.Output = 1000, 100
+		}
+		days = append(days, g)
+	}
+	c := &Ctx{Sum: &agg.Summary{ByDay: days, Total: &agg.Group{Input: 3300, Output: 300}}}
+	out := strings.Join(Daily(Theme{ASCII: true}, c, 100), "\n")
+	if !strings.Contains(out, "3 of 7 days active") {
+		t.Errorf("want \"3 of 7 days active\":\n%s", out)
+	}
+	var b bytes.Buffer
+	if err := CSV(&b, c, "day", nil, &agg.Filter{}); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := csv.NewReader(&b).ReadAll()
+	if len(rows) != 8 { // header + every day
+		t.Fatalf("day CSV must list all 7 days, got %d rows", len(rows)-1)
+	}
+	if rows[2][11] != "none" || rows[2][9] != "0" {
+		t.Errorf("zero-usage day row: %v", rows[2])
+	}
+}
+
+// Truncating wide characters can leave a gap of one column; Pad must fill
+// it so that every padded cell is exactly the requested display width.
+func TestPadIsExactDisplayWidthAfterTruncation(t *testing.T) {
+	for _, th := range []Theme{{}, {ASCII: true}, {Color: true}} {
+		for _, s := range []string{"日本語テキスト", "ab日本語", "中文字符串", "plain text"} {
+			for w := 1; w <= 8; w++ {
+				if got := Width(th.Pad(s, w)); got != w {
+					t.Errorf("Pad(%q, %d) width %d", s, w, got)
+				}
+				if got := Width(th.PadL(s, w)); got != w {
+					t.Errorf("PadL(%q, %d) width %d", s, w, got)
+				}
+			}
+		}
+	}
+}
+
+func TestTokensPromotesUnitAfterRounding(t *testing.T) {
+	for n, want := range map[int64]string{
+		999: "999", 999949: "999.9K", 999950: "1.00M", 999999: "1.00M",
+		999949999: "999.95M", 999950000: "999.95M", 999999950: "1.00B", 999999999: "1.00B", 1000000000: "1.00B",
+	} {
+		if got := Tokens(n); got != want {
+			t.Errorf("Tokens(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
+
+func TestBytesUsesByteUnits(t *testing.T) {
+	for n, want := range map[int64]string{
+		0: "0B", 999: "999B", 1000: "1.0KB", 215_000_000: "215.0MB", 999_950: "1.0MB",
+		1_500_000_000: "1.5GB", 3_000_000_000_000: "3.0TB",
+	} {
+		if got := Bytes(n); got != want {
+			t.Errorf("Bytes(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
+
+func TestJSONRangeNamesIANAZoneAndOffset(t *testing.T) {
+	loc, err := time.LoadLocation("Europe/Madrid")
+	if err != nil {
+		t.Skip("no tz database:", err)
+	}
+	c := sample(t)
+	pt, _ := pricing.Load("")
+	c.Sum = agg.Summarize(nil, agg.Filter{From: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), To: time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC)}, pt, loc)
+	var b bytes.Buffer
+	if err := JSON(&b, c); err != nil {
+		t.Fatal(err)
+	}
+	var d struct {
+		Range struct {
+			Timezone  *string `json:"timezone"`
+			UTCOffset string  `json:"utc_offset"`
+		} `json:"range"`
+	}
+	if err := json.Unmarshal(b.Bytes(), &d); err != nil {
+		t.Fatal(err)
+	}
+	// 1 Oct 2026 is before the end of summer time: +02:00 at the period start
+	if d.Range.Timezone == nil || *d.Range.Timezone != "Europe/Madrid" || d.Range.UTCOffset != "+02:00" {
+		t.Errorf("range timezone=%v utc_offset=%q", d.Range.Timezone, d.Range.UTCOffset)
+	}
+}
+
+func TestUnknownLocalZoneIsNull(t *testing.T) {
+	if time.Local.String() != "Local" {
+		t.Skip("time.Local is already named after TZ in this process")
+	}
+	if got := zoneName(time.Local); got != nil {
+		t.Errorf("zoneName(time.Local) = %v, want null: its zone name is not known", got)
+	}
+}
+
+// Unpriced models with equal tokens must come out in the same order every run.
+func TestUnpricedModelOrderIsStable(t *testing.T) {
+	unpriced := map[string]int64{"zeta": 5, "alpha": 5, "mid": 9, "beta": 5, "gamma": 5, "delta": 5}
+	g := &agg.Group{Label: "x", Unpriced: unpriced, Sessions: map[string]struct{}{}, Models: map[string]struct{}{}}
+	wantNote := "Unpriced: mid, alpha, beta, delta, +2 more."
+	wantDetail := "mid, alpha, beta, delta, gamma, zeta"
+	for i := 0; i < 50; i++ {
+		var note string
+		for _, n := range NoteItems(&Ctx{Sum: &agg.Summary{Total: g}}) {
+			if strings.HasPrefix(n.Text, "Unpriced: ") {
+				note = n.Text
+			}
+		}
+		if !strings.HasPrefix(note, wantNote) {
+			t.Fatalf("run %d: note %q, want prefix %q", i, note, wantNote)
+		}
+		var names []string
+		for _, l := range Detail(Theme{ASCII: true}, g, 80) {
+			if f := strings.Fields(Strip(l)); len(f) == 3 && f[0] == "unpriced" {
+				names = append(names, f[1])
+			}
+		}
+		if got := strings.Join(names, ", "); got != wantDetail {
+			t.Fatalf("run %d: detail order %q, want %q", i, got, wantDetail)
+		}
+	}
+}
+
+// Without colour the provider dot is the only mark of a used provider, so it
+// must still be drawn.
+func TestDotMarksProvidersWithoutColour(t *testing.T) {
+	if got := (Theme{}).Dot("claude"); got != "●" {
+		t.Errorf("plain dot = %q, want ●", got)
+	}
+	if got := (Theme{ASCII: true}).Dot("claude"); got != "*" {
+		t.Errorf("ASCII dot = %q, want *", got)
 	}
 }

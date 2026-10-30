@@ -34,7 +34,7 @@ type Gemini struct{}
 
 func (Gemini) ID() string         { return "gemini" }
 func (Gemini) Name() string       { return "Gemini CLI" }
-func (Gemini) ParserVersion() int { return 1 }
+func (Gemini) ParserVersion() int { return 2 } // 2: key on session and message id, not path
 func (Gemini) Experimental() string {
 	return "parser follows Gemini CLI's recording format as documented by third-party readers; not verified against real logs"
 }
@@ -115,11 +115,10 @@ type geminiParser struct {
 	idx     map[string]int
 	session string
 	project string
-	path    string
 }
 
 func (Gemini) NewParser(path string, r *Resume) Parser {
-	p := &geminiParser{idx: map[string]int{}, path: path,
+	p := &geminiParser{idx: map[string]int{},
 		session: strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)), project: projectAfter(path, "tmp")}
 	if r != nil {
 		p.evs, p.st = r.Events, r.Stats
@@ -180,7 +179,8 @@ func (p *geminiParser) add(m geminiMsg) {
 	thoughts := clamp(val(t.Thoughts), &p.st)
 	e := model.Event{
 		Provider: "gemini", Model: firstNonEmpty(m.Model, "unknown"), Session: p.session, Project: p.project, Time: ts,
-		Key:       "gemini:" + p.path + ":" + m.ID,
+		// The path is left out: one session may be stored as .json and .jsonl.
+		Key:       "gemini:" + p.session + ":" + m.ID,
 		Input:     input - cached + clamp(val(t.Tool), &p.st),
 		CacheRead: cached,
 		Output:    clamp(val(t.Output), &p.st) + thoughts,

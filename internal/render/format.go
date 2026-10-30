@@ -68,21 +68,21 @@ func Strip(s string) string { return ansiRe.ReplaceAllString(s, "") }
 func Width(s string) int { return runewidth.StringWidth(Strip(s)) }
 
 // Pad right-pads (or truncates with an ellipsis) to exactly w columns.
+// Truncation can stop one column short of w (a wide character does not fit),
+// so the padding is measured after it.
 func (t Theme) Pad(s string, w int) string {
-	vw := Width(s)
-	if vw > w {
-		return t.Trunc(s, w)
+	if Width(s) > w {
+		s = t.Trunc(s, w)
 	}
-	return s + strings.Repeat(" ", w-vw)
+	return s + strings.Repeat(" ", max(0, w-Width(s)))
 }
 
 // PadL left-pads to w columns.
 func (t Theme) PadL(s string, w int) string {
-	vw := Width(s)
-	if vw > w {
-		return t.Trunc(s, w)
+	if Width(s) > w {
+		s = t.Trunc(s, w)
 	}
-	return strings.Repeat(" ", w-vw) + s
+	return strings.Repeat(" ", max(0, w-Width(s))) + s
 }
 
 // Trunc shortens s to w display columns, keeping colour codes intact and
@@ -137,12 +137,32 @@ func Tokens(n int64) string {
 	case n < 1000:
 		return fmt.Sprintf("%d", n)
 	case n < 1e6:
-		return fmt.Sprintf("%.1fK", f/1e3)
+		if s := fmt.Sprintf("%.1fK", f/1e3); s != "1000.0K" {
+			return s
+		}
+		return "1.00M" // rounds up to 1000.0K: say it in the next unit
 	case n < 1e9:
-		return fmt.Sprintf("%.2fM", f/1e6)
+		if s := fmt.Sprintf("%.2fM", f/1e6); s != "1000.00M" {
+			return s
+		}
+		return "1.00B"
 	default:
 		return fmt.Sprintf("%.2fB", f/1e9)
 	}
+}
+
+// Bytes formats a byte count in decimal units (1 KB = 1000 B), as Tokens does for counts.
+func Bytes(n int64) string {
+	if n < 1000 {
+		return fmt.Sprintf("%dB", n)
+	}
+	f, unit := float64(n)/1000, 0
+	units := []string{"KB", "MB", "GB", "TB"}
+	for f >= 999.95 && unit < len(units)-1 { // promote before rounding, as Tokens does
+		f /= 1000
+		unit++
+	}
+	return fmt.Sprintf("%.1f%s", f, units[unit])
 }
 
 // Num formats an integer with thousands separators.

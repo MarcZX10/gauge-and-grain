@@ -218,3 +218,36 @@ func TestOtherToolsEndToEnd(t *testing.T) {
 		t.Errorf("sources should say experimental: %v\n%s", err, out)
 	}
 }
+
+// --format and --by used where they do nothing are errors, not silent no-ops.
+func TestFormatAndByRejectedWhereTheyDoNothing(t *testing.T) {
+	bin, home := setup(t)
+	for _, c := range []struct {
+		args []string
+		hint string
+	}{
+		{[]string{"report", "--format", "csv"}, "--format only applies to `gg export`"},
+		{[]string{"export", "--by", "model"}, "--by only applies to `gg export --format csv`"},
+		{[]string{"export", "--format", "json", "--by", "day"}, "--by only applies to `gg export --format csv`"},
+	} {
+		out, err := gg(t, bin, home, c.args...)
+		if err == nil || !strings.Contains(out, c.hint) {
+			t.Errorf("gg %v: want error with %q, got err=%v output:\n%s", c.args, c.hint, err, out)
+		}
+	}
+	if out, err := gg(t, bin, home, "export", "--format", "csv", "--by", "model"); err != nil {
+		t.Errorf("valid csv export failed: %v\n%s", err, out)
+	}
+}
+
+// FORCE_COLOR=0 and =false switch colour off; any other value switches it on.
+func TestForceColorValues(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "xterm")
+	for v, want := range map[string]bool{"1": true, "yes": true, "0": false, "false": false} {
+		t.Setenv("FORCE_COLOR", v)
+		if got := theme(&opts{}, os.Stdout).Color; got != want {
+			t.Errorf("FORCE_COLOR=%q: colour=%v, want %v", v, got, want)
+		}
+	}
+}

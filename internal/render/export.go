@@ -93,7 +93,7 @@ func JSON(w io.Writer, c *Ctx) error {
 	}
 	doc := map[string]any{
 		"generated":   time.Now().UTC().Format(time.RFC3339),
-		"range":       map[string]any{"name": c.RangeName, "from": ts(s.Filter.From), "to_exclusive": ts(s.Filter.To), "timezone": s.Loc.String()},
+		"range":       map[string]any{"name": c.RangeName, "from": ts(s.Filter.From), "to_exclusive": ts(s.Filter.To), "timezone": zoneName(s.Loc), "utc_offset": utcOffset(s.Filter.From, s.Loc)},
 		"filters":     c.Filters,
 		"total":       toJSON(s.Total),
 		"by_day":      list(s.ByDay),
@@ -113,9 +113,36 @@ func JSON(w io.Writer, c *Ctx) error {
 	if s.Prev != nil {
 		doc["previous_period"] = toJSON(s.Prev)
 	}
+	doc["partial"] = c.Cancelled // a cancelled scan has read only some files
+	if c.Cancelled {
+		doc["partial_reason"] = "scan cancelled: totals cover only the files read before cancelling"
+	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(doc)
+}
+
+// zoneName is the IANA name of loc, or nil when only "Local" is known. Go
+// names time.Local after TZ when TZ is a zone name; otherwise the zone is
+// just the system's local time and its name is not known.
+func zoneName(loc *time.Location) any {
+	if n := loc.String(); n != "Local" {
+		return n
+	}
+	return nil
+}
+
+// utcOffset is the offset of loc at t (the period start; now when unbounded), as +hh:mm.
+func utcOffset(t time.Time, loc *time.Location) string {
+	if t.IsZero() {
+		t = time.Now()
+	}
+	_, off := t.In(loc).Zone()
+	sign := "+"
+	if off < 0 {
+		sign, off = "-", -off
+	}
+	return fmt.Sprintf("%s%02d:%02d", sign, off/3600, off%3600/60)
 }
 
 func ts(t time.Time) any {
@@ -148,7 +175,6 @@ var csvHead = []string{"key", "label", "sessions", "calls", "input_tokens", "cac
 // cells, never zeros.
 func CSV(w io.Writer, c *Ctx, by string, events []model.Event, f *agg.Filter) error {
 	cw := csv.NewWriter(w)
-	defer cw.Flush()
 	if by == "events" {
 		_ = cw.Write([]string{"time", "provider", "model", "session", "project", "input_tokens", "cache_read_tokens", "cache_write_tokens", "output_tokens", "reasoning_tokens", "total_tokens", "cost_usd"})
 		for i := range events {
@@ -170,6 +196,7 @@ func CSV(w io.Writer, c *Ctx, by string, events []model.Event, f *agg.Filter) er
 				strconv.FormatInt(e.Input, 10), opt(model.HasCacheRead, e.CacheRead), opt(model.HasCacheWrite, e.CacheWrite),
 				strconv.FormatInt(e.Output, 10), opt(model.HasReasoning, e.Reasoning), strconv.FormatInt(e.Total(), 10), cost})
 		}
+		cw.Flush() // the write errors only surface here
 		return cw.Error()
 	}
 	var gs []*agg.Group
@@ -204,5 +231,6 @@ func CSV(w io.Writer, c *Ctx, by string, events []model.Event, f *agg.Filter) er
 			strconv.FormatInt(j.Input, 10), o(j.CacheRead), o(j.CacheWrite), strconv.FormatInt(j.Output, 10), o(j.Reasoning),
 			strconv.FormatInt(j.Total, 10), cost, j.CostStatus})
 	}
+	cw.Flush() // the write errors only surface here
 	return cw.Error()
 }
