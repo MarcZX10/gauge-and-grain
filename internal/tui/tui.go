@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -355,6 +356,7 @@ func (m *model_) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshing = false
 			return m, nil
 		}
+		keep := m.idx != nil && sameEvents(m.res, (*scan.Result)(msg))
 		m.res = (*scan.Result)(msg)
 		m.events = m.res.Events
 		m.cancelled = m.res.Cancelled
@@ -362,7 +364,9 @@ func (m *model_) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshing = false
 		m.updated = time.Now()
 		m.scanTook = time.Since(m.started)
-		m.idx = agg.NewIndex(m.events, m.cfg.Prices, m.cfg.Loc)
+		if !keep {
+			m.idx = agg.NewIndex(m.events, m.cfg.Prices, m.cfg.Loc)
+		}
 		m.applyPeriod()
 		if m.res.Stale > 0 && !m.freshQueued && !m.res.Cancelled {
 			// The usage above is from the previous parser's cache. Read the
@@ -376,6 +380,14 @@ func (m *model_) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.key(msg)
 	}
 	return m, nil
+}
+
+// sameEvents reports whether next holds the events prev had: nothing was
+// parsed or served from an older parser, and the same files were seen. The
+// index built from prev then still applies, so it is not rebuilt.
+func sameEvents(prev, next *scan.Result) bool {
+	return prev != nil && next.Parsed == 0 && next.Stale == 0 &&
+		len(prev.Events) == len(next.Events) && maps.Equal(prev.Files, next.Files)
 }
 
 // ---- keys ----------------------------------------------------------------

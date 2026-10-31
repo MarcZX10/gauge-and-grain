@@ -442,6 +442,36 @@ func TestReplacedScanDoesNotBlockForever(t *testing.T) {
 	}
 }
 
+// A scan that parsed nothing new keeps the index it had; a scan that parsed
+// a file, or saw other files, builds a new one.
+func TestUnchangedScanKeepsTheIndex(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	idx := m.idx
+	same := *m.res
+	same.Parsed, same.Stale = 0, 0
+	m.Update(doneMsg(&same))
+	if m.idx != idx {
+		t.Error("a scan with nothing parsed must keep the index")
+	}
+	if m.sum.Total.Tokens() == 0 {
+		t.Fatal("the kept index must still answer the view")
+	}
+	changed := same
+	changed.Parsed = 1
+	m.Update(doneMsg(&changed))
+	if m.idx == idx {
+		t.Error("a scan that parsed a file must rebuild the index")
+	}
+	idx = m.idx
+	more := *m.res
+	more.Parsed, more.Files = 0, map[string]int{"claude": 99}
+	m.Update(doneMsg(&more))
+	if m.idx == idx {
+		t.Error("a scan that sees other files must rebuild the index")
+	}
+}
+
 // A cancelled first scan with stale files starts no full rescan.
 func TestCancelledFirstScanStartsNoFollowUp(t *testing.T) {
 	m := fixtureModel(t, render.Theme{ASCII: true})
