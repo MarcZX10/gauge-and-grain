@@ -15,6 +15,7 @@ import (
 	"github.com/MarcZX10/gauge-and-grain/internal/agg"
 	"github.com/MarcZX10/gauge-and-grain/internal/providers"
 	"github.com/MarcZX10/gauge-and-grain/internal/render"
+	"github.com/MarcZX10/gauge-and-grain/internal/scan"
 )
 
 // A provider filter given on the command line is shown, and "c" clears it.
@@ -524,6 +525,41 @@ func TestFooterOffersOnlyWhatActsHere(t *testing.T) {
 	press(m, "esc", "?")
 	if f := footer(); strings.Contains(f, "export") || strings.Contains(f, "rescan") {
 		t.Errorf("help: the footer must not offer r or e: %s", f)
+	}
+}
+
+// The first scan estimates its time left only after 3 seconds and 5 % of its
+// work, from the share done and the time taken; the loading box shows it.
+func TestScanETA(t *testing.T) {
+	for _, c := range []struct {
+		elapsed time.Duration
+		done    float64
+		want    time.Duration
+		ok      bool
+	}{
+		{3 * time.Second, 0.25, 9 * time.Second, true},
+		{10 * time.Second, 0.5, 10 * time.Second, true},
+		{2 * time.Second, 0.5, 0, false},
+		{10 * time.Second, 0.04, 0, false},
+		{10 * time.Second, 0.05, 190 * time.Second, true},
+		{10 * time.Second, 1, 0, false},
+	} {
+		got, ok := scanETA(c.elapsed, c.done)
+		if ok != c.ok || got != c.want {
+			t.Errorf("scanETA(%v, %v) = %v, %v; want %v, %v", c.elapsed, c.done, got, ok, c.want, c.ok)
+		}
+	}
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 100, 30)
+	m.loading = true
+	m.prog = scan.Progress{Done: 1, Total: 4}
+	m.started = time.Now().Add(-10 * time.Second)
+	if v := render.Strip(m.View()); !strings.Contains(v, "about 30 s left") {
+		t.Errorf("the loading box must estimate the time left:\n%s", v)
+	}
+	m.started = time.Now().Add(-2 * time.Second)
+	if v := render.Strip(m.View()); strings.Contains(v, "left") {
+		t.Errorf("no estimate before 3 seconds:\n%s", v)
 	}
 }
 

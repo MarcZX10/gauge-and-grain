@@ -1902,11 +1902,16 @@ func (m *model_) loadingView() string {
 	}
 	w := max(30, min(64, m.width-4))
 	bw := w - 12
+	elapsed := time.Since(m.started)
+	stats := fmt.Sprintf("%s of %s files · %s · %s", render.Num(p.Done), render.Num(p.Total), humanBytes(p.Bytes), elapsed.Round(100*time.Millisecond))
+	if eta, ok := scanETA(elapsed, frac); ok {
+		stats += fmt.Sprintf(" · about %d s left", int(eta.Round(time.Second)/time.Second))
+	}
 	lines := []string{
 		t.FG(render.CAccent, frames[m.frame%len(frames)]) + " Reading local usage files",
 		"",
 		t.ColBar(frac, bw, render.CAccent) + fmt.Sprintf(" %3.0f%%", frac*100),
-		t.Dim(fmt.Sprintf("%s of %s files · %s · %s", render.Num(p.Done), render.Num(p.Total), humanBytes(p.Bytes), time.Since(m.started).Round(100*time.Millisecond))),
+		t.Dim(stats),
 		"",
 		t.Dim("Nothing leaves your machine. The first scan of a big history"),
 		t.Dim("takes a while; later runs only read what changed."),
@@ -1927,6 +1932,16 @@ func (m *model_) loadingView() string {
 		out = append(out, t.Trunc(pad+l, m.width))
 	}
 	return strings.Join(out, "\n")
+}
+
+// scanETA estimates the time left of a scan from the share of its work done
+// and the time it has taken so far. It says nothing before 3 seconds and
+// before 5 % of the work: the first seconds of a scan say little about the rest.
+func scanETA(elapsed time.Duration, done float64) (time.Duration, bool) {
+	if elapsed < 3*time.Second || done < 0.05 || done >= 1 {
+		return 0, false
+	}
+	return time.Duration(float64(elapsed) * (1 - done) / done), true
 }
 
 func humanBytes(n int64) string {
