@@ -87,11 +87,14 @@ type model_ struct {
 	width  int
 	height int
 
-	loading   bool
-	started   time.Time
-	frame     int
-	cancel    context.CancelFunc
-	ch        chan tea.Msg
+	loading bool
+	started time.Time
+	frame   int
+	cancel  context.CancelFunc
+	ch      chan tea.Msg
+	// gone is closed when the scan that owns ch is replaced: nobody reads its
+	// final message then, so that message must not block the scan goroutine.
+	gone      chan struct{}
 	seq       int // numbers the scans; see scanMsg
 	prog      scan.Progress
 	res       *scan.Result
@@ -255,11 +258,15 @@ func (m *model_) startScan(allowStale bool) tea.Cmd {
 	if m.cancel != nil {
 		m.cancel()
 	}
+	if m.gone != nil {
+		close(m.gone)
+	}
 	m.seq++
 	seq := m.seq
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := make(chan tea.Msg, 64)
-	m.ch, m.cancel = ch, cancel
+	gone := make(chan struct{})
+	m.ch, m.cancel, m.gone = ch, cancel, gone
 	go func() {
 		res := scan.Run(ctx, scan.Options{Providers: m.cfg.Providers, CacheDir: m.cfg.CacheDir, AllowStale: allowStale, Progress: func(p scan.Progress) {
 			select { // never block the scan on a slow UI
@@ -267,7 +274,12 @@ func (m *model_) startScan(allowStale bool) tea.Cmd {
 			default:
 			}
 		}})
-		ch <- doneMsg(res)
+		// Not ctx.Done(): a cancelled scan (Esc) still reports its partial
+		// result to the listener. Only a replaced scan has no listener.
+		select {
+		case ch <- doneMsg(res):
+		case <-gone:
+		}
 	}()
 	return listen(seq, ch)
 }

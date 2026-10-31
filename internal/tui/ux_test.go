@@ -4,13 +4,16 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/MarcZX10/gauge-and-grain/internal/agg"
+	"github.com/MarcZX10/gauge-and-grain/internal/providers"
 	"github.com/MarcZX10/gauge-and-grain/internal/render"
 )
 
@@ -404,6 +407,38 @@ func TestRescanKeepsTheViewAndEscKeepsIt(t *testing.T) {
 	}
 	if v := render.Strip(m.View()); strings.Contains(v, "Reading local usage files") || !strings.Contains(v, "Models") {
 		t.Errorf("the last complete view must stay after Esc:\n%s", v)
+	}
+}
+
+// gatedClaude holds its scan at the start until the gate opens, so a test
+// decides when the scan produces its messages.
+type gatedClaude struct {
+	providers.Claude
+	gate chan struct{}
+}
+
+func (g gatedClaude) Files() []string {
+	<-g.gate
+	return g.Claude.Files()
+}
+
+// A scan that was replaced while its listener had stopped reading must end,
+// even when its channel is full: its final message has no reader.
+func TestReplacedScanDoesNotBlockForever(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	gate := make(chan struct{})
+	m.cfg.Providers = []providers.Provider{gatedClaude{providers.Claude{}, gate}}
+	before := runtime.NumGoroutine()
+	m.startScan(false)
+	for i := 0; i < cap(m.ch); i++ { // the listener is gone: the buffer fills up
+		m.ch <- progressMsg{}
+	}
+	m.startScan(false) // replaces the first scan
+	close(gate)
+	for deadline := time.Now().Add(5 * time.Second); runtime.NumGoroutine() > before; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("replaced scan goroutines did not end: %d before, %d after", before, runtime.NumGoroutine())
+		}
 	}
 }
 
