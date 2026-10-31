@@ -22,7 +22,7 @@ type Qwen struct{}
 
 func (Qwen) ID() string         { return "qwen" }
 func (Qwen) Name() string       { return "Qwen Code" }
-func (Qwen) ParserVersion() int { return 1 }
+func (Qwen) ParserVersion() int { return 2 } // 2: cache read only when cached is present
 func (Qwen) Experimental() string {
 	return "parser follows Qwen Code's session format as documented by third-party readers; not verified against real logs"
 }
@@ -142,7 +142,10 @@ func (p *qwenParser) Line(line []byte) {
 		key = "qwen:" + p.session + ":" + r.Timestamp + ":" + itoa(val(u.Candidates))
 	}
 	e := model.Event{Provider: "qwen", Model: firstNonEmpty(r.Model, "unknown"), Session: p.session, Project: p.project, Time: ts,
-		Key: key, Input: prompt - cached, CacheRead: cached, Output: clamp(val(u.Candidates), st) + thoughts, Reasoning: thoughts, Has: model.HasCacheRead}
+		Key: key, Input: prompt - cached, CacheRead: cached, Output: clamp(val(u.Candidates), st) + thoughts, Reasoning: thoughts}
+	if u.Cached != nil { // no field, no cache read: the share is n/a, not 0%
+		e.Has |= model.HasCacheRead
+	}
 	if u.Thoughts != nil {
 		e.Has |= model.HasReasoning
 	}

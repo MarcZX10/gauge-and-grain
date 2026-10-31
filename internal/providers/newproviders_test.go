@@ -171,8 +171,16 @@ func TestGeminiSameSessionInJSONAndJSONLCountsOnce(t *testing.T) {
 
 func TestClineUsesMetadataModelByTimeAndSkipsUnusableRequests(t *testing.T) {
 	evs, st := parseFixture(t, vscodeExts[0], "vscode/User/globalStorage/saoudrizwan.claude-dev/tasks/1790000000000/ui_messages.json")
-	if len(evs) != 2 || sum(evs) != 650+10 {
-		t.Fatalf("events=%d total=%d, want 2 / 660 (in-flight and cancelled requests skipped)", len(evs), sum(evs))
+	// in-flight request skipped; the cancelled one has tokens, so it counts (9/9)
+	if len(evs) != 3 || sum(evs) != 650+10+18 {
+		t.Fatalf("events=%d total=%d, want 3 / 678 (in-flight skipped, cancelled with tokens counted)", len(evs), sum(evs))
+	}
+	cancelled := false
+	for _, e := range evs {
+		cancelled = cancelled || (e.Input == 9 && e.Output == 9)
+	}
+	if !cancelled {
+		t.Errorf("the cancelled request (9 in, 9 out) must be counted: %+v", evs)
 	}
 	a, b := find(evs, "claude-sonnet-5-5"), find(evs, "gpt-5.4")
 	if a == nil || a.Input != 100 || a.CacheRead != 300 || a.CacheWrite != 200 || a.Output != 50 {
@@ -219,3 +227,37 @@ func TestDetectionHonoursOverridesAndStaysQuietWhenMissing(t *testing.T) {
 }
 
 func writeFile(path, s string) error { return os.WriteFile(path, []byte(s), 0o644) }
+
+// A message without a cached-token field reports no cache read (n/a), while a
+// message that has the field and says 0 reports 0.
+func TestGeminiAndQwenCacheReadNeedsTheCachedField(t *testing.T) {
+	gem := strings.Join([]string{
+		`{"id":"g1","type":"gemini","timestamp":"2026-10-04T10:00:00.000Z","model":"gemini-2.5-pro","tokens":{"input":100,"output":10,"total":110}}`,
+		`{"id":"g2","type":"gemini","timestamp":"2026-10-04T10:00:01.000Z","model":"gemini-2.5-pro","tokens":{"input":100,"output":10,"cached":0,"total":110}}`,
+	}, "\n") + "\n"
+	evs, _, err := ParseAll(Gemini{}, "/x/chats/s.jsonl", strings.NewReader(gem))
+	if err != nil || len(evs) != 2 {
+		t.Fatalf("gemini: %v, %d events", err, len(evs))
+	}
+	if evs[0].Has&model.HasCacheRead != 0 {
+		t.Errorf("gemini without cached must not report a cache read: %+v", evs[0])
+	}
+	if evs[1].Has&model.HasCacheRead == 0 {
+		t.Errorf("gemini with cached 0 must report a cache read: %+v", evs[1])
+	}
+
+	qw := strings.Join([]string{
+		`{"uuid":"q1","type":"assistant","timestamp":"2026-10-05T08:00:00Z","model":"qwen3-coder-plus","usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":10}}`,
+		`{"uuid":"q2","type":"assistant","timestamp":"2026-10-05T08:00:01Z","model":"qwen3-coder-plus","usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":10,"cachedContentTokenCount":0}}`,
+	}, "\n") + "\n"
+	evs, _, err = ParseAll(Qwen{}, "/x/projects/-w/chats/q.jsonl", strings.NewReader(qw))
+	if err != nil || len(evs) != 2 {
+		t.Fatalf("qwen: %v, %d events", err, len(evs))
+	}
+	if evs[0].Has&model.HasCacheRead != 0 {
+		t.Errorf("qwen without cachedContentTokenCount must not report a cache read: %+v", evs[0])
+	}
+	if evs[1].Has&model.HasCacheRead == 0 {
+		t.Errorf("qwen with cached 0 must report a cache read: %+v", evs[1])
+	}
+}
