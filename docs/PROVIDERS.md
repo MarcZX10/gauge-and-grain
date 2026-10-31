@@ -60,6 +60,8 @@ API outside Claude Code is not in these files.
 5. The same `response_id` in several files (archived copy, forked session) is counted once.
 6. Once a file has its first `token_usage_record`, later `token_count` events in that file are ignored (they
    are cumulative views of the same usage). Earlier ones are still counted.
+7. Tool calls are attached to the next usage event. Calls with no usage after them (the end of the file,
+   for instance a session still running) are counted once in a tool-only event with zero tokens.
 
 **Limitations:** background/auto-review models appear under their own names and may be unpriced.
 A session that was killed mid-write can end in a truncated line; it is reported as malformed.

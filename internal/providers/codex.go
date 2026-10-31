@@ -29,7 +29,7 @@ type Codex struct{}
 
 func (Codex) ID() string         { return "codex" }
 func (Codex) Name() string       { return "OpenAI Codex" }
-func (Codex) ParserVersion() int { return 4 } // 4: call items routed first, local_shell; 3: tool calls
+func (Codex) ParserVersion() int { return 5 } // 5: calls with no usage after them are counted at end of file; 4: call items routed first, local_shell; 3: tool calls
 func (Codex) Fields() Fields {
 	return Fields{CacheRead: true, CacheWrite: true, Reasoning: true,
 		Note: "cache writes are not billed separately by OpenAI"}
@@ -140,6 +140,9 @@ type codexState struct {
 	// each call before the usage record of the response that made it, so they
 	// belong to the next usage event (id=name entries, see model.ToolEntry).
 	Pending []string
+	// PendingAt is the time of the first pending call, for the tool-only
+	// event that Result emits when calls are still pending at the end.
+	PendingAt time.Time
 }
 
 // codexParser keeps one list of events: the usage counted from cumulative
@@ -163,11 +166,14 @@ func (Codex) NewParser(path string, r *Resume) Parser {
 				p.s = s
 			}
 		}
-		p.evs = r.Events
-		for i := range p.evs {
-			if k, ok := strings.CutPrefix(p.evs[i].Key, "codex:resp:"); ok {
+		for _, e := range r.Events {
+			if strings.HasPrefix(e.Key, codexToolPrefix) {
+				continue
+			}
+			if k, ok := strings.CutPrefix(e.Key, "codex:resp:"); ok {
 				p.seenResp[k] = true
 			}
+			p.evs = append(p.evs, e)
 		}
 	}
 	return p
@@ -179,7 +185,25 @@ func (p *codexParser) State() []byte {
 	return b.Bytes()
 }
 
-func (p *codexParser) Result() ([]model.Event, model.ParseStats) { return p.evs, p.st }
+// Result also emits the calls still pending at the end of the file as a
+// tool-only event (no tokens). Pending is not cleared: the next usage event
+// takes the calls, and the tool-only event is then gone from the next Result.
+// Its key is built from the calls, so the same calls in an archived copy of
+// the file count once.
+func (p *codexParser) Result() ([]model.Event, model.ParseStats) {
+	evs := p.evs
+	if len(p.s.Pending) > 0 {
+		t := strings.Join(p.s.Pending, ",")
+		e := model.Event{Provider: "codex", Model: firstNonEmpty(p.s.CurModel, "unknown"), Session: p.s.Session,
+			Project: p.s.CWD, Time: p.s.PendingAt, Key: codexToolPrefix + p.s.Session + ":" + t, Tools: t}
+		evs = append(evs[:len(evs):len(evs)], e) // a copy: p.evs must not keep it
+	}
+	return evs, p.st
+}
+
+// codexToolPrefix marks the tool-only events of Result. They are not state:
+// a resumed parser drops them (their calls are in Pending) and emits them again.
+const codexToolPrefix = "codex:tools:"
 
 func (p *codexParser) Line(line []byte) {
 	st := &p.st
@@ -312,6 +336,9 @@ func (p *codexParser) addCall(line []byte) bool {
 		entry = model.ToolEntry("ws:"+c.Timestamp, strings.TrimSuffix(c.Payload.Type, "_call"))
 	default:
 		return false
+	}
+	if len(p.s.Pending) == 0 {
+		p.s.PendingAt, _ = time.Parse(time.RFC3339Nano, c.Timestamp)
 	}
 	p.s.Pending = append(p.s.Pending, entry)
 	return true
