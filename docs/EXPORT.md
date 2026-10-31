@@ -28,10 +28,13 @@ All [filters](GUIDE.md#filters) apply. Progress and warnings go to **stderr**, s
 
 ## JSON
 
-One object:
+One object. Its first key is `schema_version`, which is `1` for this layout. It rises only when an existing key is
+renamed, removed or changes meaning; new keys are added without a change of version, so readers should ignore keys
+they do not know.
 
 | Key | Contents |
 |---|---|
+| `schema_version` | the version of this document's layout (`1`) |
 | `generated` | UTC timestamp |
 | `range` | `name`, `from`, `to_exclusive` (UTC; `null` for all time), `timezone` (IANA name, e.g. `Europe/Madrid`; `null` when only the system's local time is known), `utc_offset` (the offset at the start of the period, e.g. `+02:00`; at now for all time) |
 | `filters` | the non-date filters, as text |

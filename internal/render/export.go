@@ -75,47 +75,77 @@ func list(gs []*agg.Group) []jsonGroup {
 	return out
 }
 
+// JSONSchemaVersion is the version of the document JSON writes. It rises
+// when a field is renamed, removed or changes meaning; adding a field does not.
+const JSONSchemaVersion = 1
+
+// jsonSource is one provider's detection status in the JSON document.
+type jsonSource struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Files  int    `json:"files"`
+	Detail string `json:"detail"`
+}
+
+// jsonDoc is the whole export. Fields are in the order they are written, so
+// schema_version is the first key.
+type jsonDoc struct {
+	SchemaVersion  int            `json:"schema_version"`
+	Generated      string         `json:"generated"`
+	Range          map[string]any `json:"range"`
+	Filters        string         `json:"filters"`
+	Total          jsonGroup      `json:"total"`
+	PreviousPeriod *jsonGroup     `json:"previous_period,omitempty"`
+	ByDay          []jsonGroup    `json:"by_day"`
+	ByProvider     []jsonGroup    `json:"by_provider"`
+	ByModel        []jsonGroup    `json:"by_model"`
+	ByProject      []jsonGroup    `json:"by_project"`
+	BySession      []jsonGroup    `json:"by_session"`
+	Sources        []jsonSource   `json:"sources"`
+	Parse          map[string]int `json:"parse"`
+	Notes          []string       `json:"notes"`
+	Prices         any            `json:"prices"`
+	Partial        bool           `json:"partial"`
+	PartialReason  string         `json:"partial_reason,omitempty"`
+}
+
 // JSON writes the whole summary as one document.
 func JSON(w io.Writer, c *Ctx) error {
 	s := c.Sum
-	type src struct {
-		ID     string `json:"id"`
-		Name   string `json:"name"`
-		Status string `json:"status"`
-		Files  int    `json:"files"`
-		Detail string `json:"detail"`
-	}
-	var sources []src
+	var sources []jsonSource
 	for _, id := range provOrder {
 		if d, ok := c.Detect[id]; ok {
-			sources = append(sources, src{id, provName(id), d.Status.String(), c.Files[id], d.Detail})
+			sources = append(sources, jsonSource{id, provName(id), d.Status.String(), c.Files[id], d.Detail})
 		}
 	}
-	doc := map[string]any{
-		"generated":   time.Now().UTC().Format(time.RFC3339),
-		"range":       map[string]any{"name": c.RangeName, "from": ts(s.Filter.From), "to_exclusive": ts(s.Filter.To), "timezone": zoneName(s.Loc), "utc_offset": utcOffset(s.Filter.From, s.Loc)},
-		"filters":     c.Filters,
-		"total":       toJSON(s.Total),
-		"by_day":      list(s.ByDay),
-		"by_provider": list(s.ByProvider),
-		"by_model":    list(s.ByModel),
-		"by_project":  list(s.ByProject),
-		"by_session":  list(s.BySession),
-		"sources":     sources,
-		"parse":       map[string]int{"malformed": c.Stats.Malformed, "clamped": c.Stats.Anomalies, "oversized": c.Stats.Oversized, "duplicates_merged": c.Duplicate, "unreadable_files": c.Errors},
-		"notes": []string{
+	doc := jsonDoc{
+		SchemaVersion: JSONSchemaVersion,
+		Generated:     time.Now().UTC().Format(time.RFC3339),
+		Range:         map[string]any{"name": c.RangeName, "from": ts(s.Filter.From), "to_exclusive": ts(s.Filter.To), "timezone": zoneName(s.Loc), "utc_offset": utcOffset(s.Filter.From, s.Loc)},
+		Filters:       c.Filters,
+		Total:         toJSON(s.Total),
+		ByDay:         list(s.ByDay),
+		ByProvider:    list(s.ByProvider),
+		ByModel:       list(s.ByModel),
+		ByProject:     list(s.ByProject),
+		BySession:     list(s.BySession),
+		Sources:       sources,
+		Parse:         map[string]int{"malformed": c.Stats.Malformed, "clamped": c.Stats.Anomalies, "oversized": c.Stats.Oversized, "duplicates_merged": c.Duplicate, "unreadable_files": c.Errors},
+		Notes: []string{
 			"cost_usd is an API-equivalent estimate at list prices, not a subscription bill",
 			"null token fields mean the source did not report them; they are not zero",
 			"total_tokens = input + cache_read + cache_write + output (reasoning is a subset of output)",
 		},
-		"prices": priceSources(c.Prices),
+		Prices:  priceSources(c.Prices),
+		Partial: c.Cancelled, // a cancelled scan has read only some files
 	}
 	if s.Prev != nil {
-		doc["previous_period"] = toJSON(s.Prev)
+		prev := toJSON(s.Prev)
+		doc.PreviousPeriod = &prev
 	}
-	doc["partial"] = c.Cancelled // a cancelled scan has read only some files
 	if c.Cancelled {
-		doc["partial_reason"] = "scan cancelled: totals cover only the files read before cancelling"
+		doc.PartialReason = "scan cancelled: totals cover only the files read before cancelling"
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
@@ -177,13 +207,19 @@ func CSV(w io.Writer, c *Ctx, by string, events []model.Event, f *agg.Filter) er
 	cw := csv.NewWriter(w)
 	if by == "events" {
 		_ = cw.Write([]string{"time", "provider", "model", "session", "project", "input_tokens", "cache_read_tokens", "cache_write_tokens", "output_tokens", "reasoning_tokens", "total_tokens", "cost_usd"})
+		prices := map[string]*pricing.Price{} // model -> price (nil = unpriced); Lookup normalises the id each time
 		for i := range events {
 			e := &events[i]
 			if !f.Match(e) {
 				continue
 			}
+			p, seen := prices[e.Model]
+			if !seen {
+				p = c.Prices.Lookup(e.Model)
+				prices[e.Model] = p
+			}
 			cost := ""
-			if p := c.Prices.Lookup(e.Model); p != nil {
+			if p != nil {
 				cost = strconv.FormatFloat(p.Cost(e), 'f', 6, 64)
 			}
 			opt := func(bit uint8, v int64) string {

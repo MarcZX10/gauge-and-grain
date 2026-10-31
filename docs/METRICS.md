@@ -45,7 +45,7 @@ Details, assumptions and which of these are verified: [PROVIDERS.md](PROVIDERS.m
   which only the *increase* is used, so the turn-end re-broadcast of the same total adds nothing. Archived sessions
   are de-duplicated by response id.
 - **Sessions** — distinct provider + session ids with at least one call in the selected range.
-- **Projects** — the working directory of the session (the last two path elements are shown). Some tools do not record
+- **Projects** — the working directory of the session (the last two path elements are shown; more when two projects would otherwise show the same label). Some tools do not record
   one: those show as `(unknown)` (the Cline family) or as the tool's own project id (`gemini:<id>`, `qwen:<dir>`).
 - **Days** — your local time zone.
 
@@ -73,8 +73,13 @@ at **public API list prices** per 1M tokens (see [PRICING.md](PRICING.md) for th
   previous period has no usage.
 - **Share** — a row's tokens as a fraction of the selected total.
 - **Cache hit share** — cache read ÷ (input + cache read + cache write): how much of the prompt-side traffic came from
-  cache. Shown only when a source reports cache reads.
-- **Trend** — the daily chart is tokens per day, with days of zero usage filled in so it is not visually compressed.
+  cache. Shown only when a source reports cache reads. It is computed over the calls that report cache reads, so a
+  source that reports none does not lower it. When such a source has part of the input, the line says so:
+  "(from N% of input that reports caches)" gives the share of all input that the figure covers.
+- **Daily chart buckets** — a window with more days than the chart has columns is drawn in buckets of consecutive
+  days (for example "weekly buckets"), and the line says the bucket size. The peak then names the bucket's first and
+  last day, and its tokens are the bucket's total, not one day's.
+- **Trend** — the daily chart is tokens per day (or per bucket, see above), with days of zero usage filled in so it is not visually compressed.
   "Second half vs first half" appears only for ranges with at least 7 active days.
 - **Fair comparisons** — shares across providers use the same token definition; the Notes view lists, per provider,
   the fields it does not always report, so you know when two numbers mean slightly different things.

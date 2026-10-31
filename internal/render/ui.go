@@ -320,7 +320,7 @@ func Detail(t Theme, g *agg.Group, w int) []string {
 		out = append(out, t.Warn("unpriced ")+m+t.Dim(" "+Tokens(g.Unpriced[m])))
 	}
 	if sh, ok := g.CacheShare(); ok && g.Has&model.HasCacheRead != 0 {
-		out = append(out, t.Dim("cache hit share "+Pct(sh)))
+		out = append(out, t.Dim(cacheShareText(g, sh)))
 	}
 	if !g.First.IsZero() {
 		out = append(out, t.Dim(g.First.Local().Format("2006-01-02")+" → "+g.Last.Local().Format("2006-01-02")))
