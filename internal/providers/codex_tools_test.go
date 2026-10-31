@@ -155,3 +155,22 @@ func TestCodexCallsWithoutLaterUsageAreCountedAtEnd(t *testing.T) {
 		}
 	}
 }
+
+// A wrong-typed name on a usage record or a call item does not drop the usage.
+func TestCodexBadNameKeepsUsage(t *testing.T) {
+	lines := []string{
+		`{"timestamp":"2026-10-03T00:00:00Z","type":"turn_context","payload":{"model":"gpt-5.4","cwd":"/w/a"}}`,
+		`{"timestamp":"2026-10-03T00:00:01Z","type":"response_item","payload":{"type":"function_call","name":5,"call_id":"c1"}}`,
+		`{"timestamp":"2026-10-03T00:00:02Z","type":"token_usage_record","payload":{"response_id":"r1","cwd":7,"session_id":["x"],"usage":{"input_tokens":10,"output_tokens":5}}}`,
+	}
+	evs, st, err := ParseAll(Codex{}, "/x/s.jsonl", strings.NewReader(strings.Join(lines, "\n")+"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || st.Malformed != 0 {
+		t.Fatalf("want one event and no malformed line, got %d events, malformed=%d", len(evs), st.Malformed)
+	}
+	if e := evs[0]; e.Input != 10 || e.Output != 5 || e.Project != "/w/a" || e.Tools != "" {
+		t.Errorf("event: %+v", e)
+	}
+}

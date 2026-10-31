@@ -26,7 +26,7 @@ type Claude struct{}
 
 func (Claude) ID() string         { return "claude" }
 func (Claude) Name() string       { return "Claude Code" }
-func (Claude) ParserVersion() int { return 5 } // 5: no uuid fallback key, malformed without message id; 4: key on message id only; 3: tool uses, one per id
+func (Claude) ParserVersion() int { return 5 } // 5: no uuid fallback key, malformed without message id, wrong-typed fields keep the usage; 4: key on message id only; 3: tool uses, one per id
 func (Claude) Fields() Fields {
 	return Fields{CacheRead: true, CacheWrite: true, Reasoning: true,
 		Note: "reasoning shown only when the log carries thinking_tokens"}
@@ -67,14 +67,15 @@ func (c Claude) Detect() Detection {
 type claudeLine struct {
 	Type      string `json:"type"`
 	Timestamp string `json:"timestamp"`
-	SessionID string `json:"sessionId"`
-	SessionU  string `json:"session_id"`
-	CWD       string `json:"cwd"`
-	RequestID string `json:"requestId"`
+	// The names are decoded by looseString and the content by claudeTools:
+	// a wrong-typed field among them must not drop the usage of the record.
+	SessionID json.RawMessage `json:"sessionId"`
+	SessionU  json.RawMessage `json:"session_id"`
+	CWD       json.RawMessage `json:"cwd"`
 	Message   *struct {
-		ID      string        `json:"id"`
-		Model   string        `json:"model"`
-		Content []claudeBlock `json:"content"`
+		ID      string          `json:"id"`
+		Model   string          `json:"model"`
+		Content json.RawMessage `json:"content"`
 		Usage   *struct {
 			Input      *int64 `json:"input_tokens"`
 			Output     *int64 `json:"output_tokens"`
@@ -100,9 +101,20 @@ type claudeBlock struct {
 	} `json:"input"`
 }
 
+// looseString reads a string field that is left out when it has another type.
+func looseString(raw json.RawMessage) string {
+	var s string
+	_ = json.Unmarshal(raw, &s)
+	return s
+}
+
 // claudeTools names the tools one message uses: each tool_use block, with a
-// skill shown as skill:<name> (the Skill tool takes the skill's name).
-func claudeTools(content []claudeBlock) string {
+// skill shown as skill:<name> (the Skill tool takes the skill's name). A
+// wrong-typed field keeps the rest of its block (the skill name is then
+// missing); partial results are kept.
+func claudeTools(raw json.RawMessage) string {
+	var content []claudeBlock
+	_ = json.Unmarshal(raw, &content)
 	var uses []string
 	for _, b := range content {
 		if b.Type != "tool_use" {
@@ -181,8 +193,8 @@ func (p *claudeParser) Line(line []byte) {
 	e := model.Event{
 		Provider:  "claude",
 		Model:     m.Model,
-		Session:   firstNonEmpty(l.SessionID, l.SessionU, p.fileSession),
-		Project:   l.CWD,
+		Session:   firstNonEmpty(looseString(l.SessionID), looseString(l.SessionU), p.fileSession),
+		Project:   looseString(l.CWD),
 		Time:      ts,
 		Input:     clamp(val(u.Input), st),
 		Output:    clamp(val(u.Output), st),

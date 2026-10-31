@@ -29,7 +29,7 @@ type Codex struct{}
 
 func (Codex) ID() string         { return "codex" }
 func (Codex) Name() string       { return "OpenAI Codex" }
-func (Codex) ParserVersion() int { return 5 } // 5: calls with no usage after them are counted at end of file; 4: call items routed first, local_shell; 3: tool calls
+func (Codex) ParserVersion() int { return 5 } // 5: calls with no usage after them are counted at end of file; a bad name keeps the usage; 4: call items routed first, local_shell; 3: tool calls
 func (Codex) Fields() Fields {
 	return Fields{CacheRead: true, CacheWrite: true, Reasoning: true,
 		Note: "cache writes are not billed separately by OpenAI"}
@@ -78,17 +78,23 @@ type codexLine struct {
 	Type      string `json:"type"`
 	Payload   struct {
 		Type       string      `json:"type"`
-		ID         string      `json:"id"`
-		SessionID  string      `json:"session_id"`
-		ThreadID   string      `json:"thread_id"`
 		ResponseID string      `json:"response_id"`
-		CWD        string      `json:"cwd"`
-		Model      string      `json:"model"`
 		Usage      *codexUsage `json:"usage"`
 		Info       *struct {
 			Total *codexUsage `json:"total_token_usage"`
 			Last  *codexUsage `json:"last_token_usage"`
 		} `json:"info"`
+	} `json:"payload"`
+}
+
+// codexMeta holds the names of a line. It is decoded apart from codexLine: a
+// wrong-typed name (a cwd that is a number, say) must not drop the usage.
+type codexMeta struct {
+	Payload struct {
+		ID        string `json:"id"`
+		SessionID string `json:"session_id"`
+		CWD       string `json:"cwd"`
+		Model     string `json:"model"`
 	} `json:"payload"`
 }
 
@@ -225,20 +231,23 @@ func (p *codexParser) Line(line []byte) {
 		st.Malformed++
 		return
 	}
+	var m codexMeta
+	_ = json.Unmarshal(line, &m) // partial names are kept; a bad name is left out
 	pl := &l.Payload
+	nm := &m.Payload
 	switch l.Type {
 	case "session_meta":
-		p.s.Session = firstNonEmpty(pl.SessionID, pl.ID, p.s.Session)
-		if pl.CWD != "" {
-			p.s.CWD = pl.CWD
+		p.s.Session = firstNonEmpty(nm.SessionID, nm.ID, p.s.Session)
+		if nm.CWD != "" {
+			p.s.CWD = nm.CWD
 		}
 		return
 	case "turn_context":
-		if pl.Model != "" {
-			p.s.CurModel = pl.Model
+		if nm.Model != "" {
+			p.s.CurModel = nm.Model
 		}
-		if pl.CWD != "" {
-			p.s.CWD = pl.CWD
+		if nm.CWD != "" {
+			p.s.CWD = nm.CWD
 		}
 		return
 	}
@@ -248,7 +257,7 @@ func (p *codexParser) Line(line []byte) {
 		return
 	}
 	base := model.Event{Provider: "codex", Model: firstNonEmpty(p.s.CurModel, "unknown"),
-		Session: firstNonEmpty(pl.SessionID, p.s.Session), Project: p.s.CWD, Time: ts}
+		Session: firstNonEmpty(nm.SessionID, p.s.Session), Project: p.s.CWD, Time: ts}
 	switch {
 	case l.Type == "token_usage_record":
 		if pl.ResponseID == "" {
@@ -316,9 +325,8 @@ type codexCall struct {
 // skipped.
 func (p *codexParser) addCall(line []byte) bool {
 	var c codexCall
-	if json.Unmarshal(line, &c) != nil {
-		return false
-	}
+	_ = json.Unmarshal(line, &c) // a wrong-typed field leaves the rest; a line that is not JSON leaves Type empty
+
 	var entry string
 	switch c.Payload.Type {
 	case "function_call", "custom_tool_call":
