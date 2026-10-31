@@ -281,3 +281,27 @@ func TestCodexStateDoesNotCarryEvents(t *testing.T) {
 		t.Errorf("resume state is %d bytes: it must stay small and independent of the number of events", n)
 	}
 }
+
+// Without a message id a record cannot be told apart from the other blocks of
+// its reply, so it is malformed, whatever else it carries (a uuid included).
+func TestClaudeRecordWithoutMessageIDIsMalformed(t *testing.T) {
+	usage := `"usage":{"input_tokens":2,"output_tokens":5}`
+	cases := []struct {
+		name string
+		line string
+	}{
+		{"no id", `{"type":"assistant","sessionId":"s","timestamp":"2026-10-03T00:00:00Z","message":{"model":"claude-opus-5-5",` + usage + `}}`},
+		{"no id, uuid", `{"type":"assistant","uuid":"u1","sessionId":"s","timestamp":"2026-10-03T00:00:00Z","message":{"model":"claude-opus-5-5",` + usage + `}}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			evs, st, err := ParseAll(Claude{}, "/x/s.jsonl", strings.NewReader(c.line+"\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(evs) != 0 || st.Malformed != 1 {
+				t.Fatalf("want no event and 1 malformed, got %d events, malformed=%d", len(evs), st.Malformed)
+			}
+		})
+	}
+}

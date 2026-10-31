@@ -30,7 +30,7 @@ assumption are in `testdata/`, with expected numbers worked out by hand in the t
 5. Records whose model starts with `<` (e.g. `<synthetic>`) are not API calls and are skipped.
 6. Project = the record's `cwd`.
 
-**Limitations:** records without a `message.id` and `uuid` cannot be de-duplicated safely and are
+**Limitations:** records without a `message.id` cannot be de-duplicated safely and are
 counted as malformed. When a record has no 5-minute/1-hour cache TTL breakdown, its cache writes are priced at the
 5-minute rate. Usage from Claude.ai chat, Claude Desktop chat, or the
 API outside Claude Code is not in these files.

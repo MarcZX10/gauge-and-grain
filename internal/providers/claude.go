@@ -16,7 +16,7 @@ import (
 //   - Only "assistant" records with message.usage are billed calls.
 //   - Claude Code writes one record per content block, repeating the same
 //     message.id and the same usage; we count each call once and
-//     keep the largest counter seen.
+//     keep the largest counter seen. A record without a message.id is malformed.
 //   - input_tokens excludes cache; cache_creation_input_tokens and
 //     cache_read_input_tokens are separate. thinking_tokens is a subset of
 //     output_tokens.
@@ -26,7 +26,7 @@ type Claude struct{}
 
 func (Claude) ID() string         { return "claude" }
 func (Claude) Name() string       { return "Claude Code" }
-func (Claude) ParserVersion() int { return 4 } // 4: key on message id only; 3: tool uses, one per id
+func (Claude) ParserVersion() int { return 5 } // 5: no uuid fallback key, malformed without message id; 4: key on message id only; 3: tool uses, one per id
 func (Claude) Fields() Fields {
 	return Fields{CacheRead: true, CacheWrite: true, Reasoning: true,
 		Note: "reasoning shown only when the log carries thinking_tokens"}
@@ -71,7 +71,6 @@ type claudeLine struct {
 	SessionU  string `json:"session_id"`
 	CWD       string `json:"cwd"`
 	RequestID string `json:"requestId"`
-	UUID      string `json:"uuid"`
 	Message   *struct {
 		ID      string        `json:"id"`
 		Model   string        `json:"model"`
@@ -204,16 +203,12 @@ func (p *claudeParser) Line(line []byte) {
 		e.Reasoning = clamp(*u.Details.Thinking, st)
 		e.Has |= model.HasReasoning
 	}
-	switch {
-	case m.ID != "":
-		// requestId is left out: some lines of one call lack it.
-		e.Key = "claude:" + m.ID
-	case l.UUID != "":
-		e.Key = "claude:uuid:" + l.UUID
-	default:
-		st.Malformed++ // no identity: cannot be deduplicated safely
+	if m.ID == "" { // no identity: one response written as several blocks cannot be counted once
+		st.Malformed++
 		return
 	}
+	// requestId is left out: some lines of one call lack it.
+	e.Key = "claude:" + m.ID
 	if i, ok := p.idx[e.Key]; ok {
 		p.evs[i].Merge(&e)
 		return
