@@ -248,3 +248,47 @@ func TestOpenCodeCopyOverLimitIsAnError(t *testing.T) {
 		t.Error("a file over the limit must be an error")
 	}
 }
+
+// A message row over the limit is not read, but its step-finish parts still
+// give its tokens (counted with the model unknown). An oversized step part is
+// not counted and is reported as oversized.
+func TestOpenCodeOversizedRowsUseStepTokensAndCountParts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode.db")
+	db := makeOpenCodeDB(t, path)
+	pad := strings.Repeat("x", maxRowData)
+	bigMsg := `{"role":"assistant","modelID":"big","pad":"` + pad + `"}`
+	bigStep := `{"type":"step-finish","tokens":{"input":1,"output":1},"pad":"` + pad + `"}`
+	for _, q := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO message VALUES ('mbig','s1',1790100500000,?)`, []any{bigMsg}},
+		{`INSERT INTO part VALUES ('pbig1','mbig','{"type":"step-finish","tokens":{"input":7,"output":3,"cache":{"read":2}}}')`, nil},
+		{`INSERT INTO part VALUES ('pbig2','m2',?)`, []any{bigStep}},
+	} {
+		if _, err := db.Exec(q.sql, q.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+	evs, st, err := opencodeFamily[0].ParsePath(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got *model.Event
+	for i := range evs {
+		if evs[i].Key == "opencode:s1:mbig" {
+			got = &evs[i]
+		}
+	}
+	if got == nil || got.Input != 7 || got.Output != 3 || got.CacheRead != 2 || got.Model != "unknown" || got.Project != "/work/oc" {
+		t.Errorf("oversized row must take the tokens of its step parts: %+v", got)
+	}
+	// the message row and the oversized step part of m2 are both counted as oversized
+	if st.Oversized != 2 {
+		t.Errorf("oversized=%d, want 2 (the row and the part)", st.Oversized)
+	}
+	if find(evs, "claude-sonnet-5-5") == nil {
+		t.Error("m2 must still be counted from its own tokens")
+	}
+}

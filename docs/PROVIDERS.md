@@ -131,7 +131,8 @@ switch is attributed to the last model). **No working directory is recorded**, s
 is opened **read-only**; its `-wal` file counts as part of the file for caching.
 
 **Semantics:** assistant `message.data` JSON carries `tokens {input, output, reasoning, cache:{read,write}}`
-(also per `step-finish` part, which is used when the message-level block is empty). `input` excludes
+(also per `step-finish` part, which is used when the message-level block is empty). A message row over 8 MB is not read: its step-finish parts still give its tokens, with the model
+unknown. Step-finish parts over 8 MB are skipped and counted as oversized. `input` excludes
 cache; OpenCode computes `output` as outputTokens − reasoning and bills reasoning at the output rate, so
 reasoning is **added to output** here (and kept as the Reasoning subset). Projects come from
 `session → project.worktree`. If this assumption about `output` is wrong for your version, totals for
