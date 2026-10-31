@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/MarcZX10/gauge-and-grain/internal/providers"
 )
 
 // gg builds the binary once and runs it against fixture homes, so the whole
@@ -249,5 +251,64 @@ func TestForceColorValues(t *testing.T) {
 		if got := theme(&opts{}, os.Stdout).Color; got != want {
 			t.Errorf("FORCE_COLOR=%q: colour=%v, want %v", v, got, want)
 		}
+	}
+}
+
+// The report reads the same detection as before the dashboard started
+// detecting in the background: its output must stay byte for byte.
+func TestReportOutputIsUnchanged(t *testing.T) {
+	bin, home := setup(t)
+	out, err := gg(t, bin, home, "report", "--all")
+	if err != nil {
+		t.Fatal(err, out)
+	}
+	want, err := os.ReadFile(filepath.Join("testdata", "report_all.golden"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != string(want) {
+		t.Errorf("report output changed:\n--- want\n%s\n--- got\n%s", want, out)
+	}
+}
+
+// Detection starts without waiting for it: the dashboard can draw before
+// the provider trees are read.
+func TestDetectRunsInTheBackground(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{})
+	old := detectFn
+	detectFn = func() (map[string]providers.Detection, map[string]int) {
+		close(started)
+		<-release
+		return map[string]providers.Detection{"claude": {Status: providers.Ready}}, nil
+	}
+	defer func() { detectFn = old }()
+
+	returned := make(chan (<-chan map[string]providers.Detection), 1)
+	go func() { returned <- startDetect() }()
+	var ch <-chan map[string]providers.Detection
+	select {
+	case ch = <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("startDetect waits for the detection")
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("detection did not start")
+	}
+	select {
+	case <-ch:
+		t.Fatal("result arrived before detection finished")
+	default:
+	}
+	close(release)
+	select {
+	case d := <-ch:
+		if d["claude"].Status != providers.Ready {
+			t.Errorf("result %+v, want the detection's own", d)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("result never arrived")
 	}
 }

@@ -444,6 +444,20 @@ func detectAll() (map[string]providers.Detection, map[string]int) {
 	return d, nil
 }
 
+// detectFn is what startDetect runs; a variable so a test can replace it.
+var detectFn = detectAll
+
+// startDetect runs detection in the background and returns a channel that
+// gets the result once, so the dashboard can draw before the trees are read.
+func startDetect() <-chan map[string]providers.Detection {
+	ch := make(chan map[string]providers.Detection, 1)
+	go func() {
+		d, _ := detectFn()
+		ch <- d
+	}()
+	return ch
+}
+
 func run(cmd string, o *opts) error {
 	switch cmd {
 	case "sources":
@@ -472,11 +486,17 @@ func run(cmd string, o *opts) error {
 	if o.noCache {
 		cd = ""
 	}
-	detect, _ := detectAll()
+	var detect map[string]providers.Detection
+	var detectCh <-chan map[string]providers.Detection
+	if cmd == "tui" {
+		detectCh = startDetect()
+	} else {
+		detect, _ = detectAll()
+	}
 
 	if cmd == "tui" {
 		return tui.Run(tui.Config{
-			Providers: provs, Detect: detect, Prices: pt, CacheDir: cd, Filter: f, RangeName: rangeName,
+			Providers: provs, DetectCh: detectCh, Prices: pt, CacheDir: cd, Filter: f, RangeName: rangeName,
 			Theme: theme(o, os.Stdout), Loc: now.Location(), DaysFlag: o.days, All: o.all,
 			Bounded: o.from == "" && o.to == "", Compact: o.compact,
 			Explicit: o.periodGiven, Refresh: watchInterval(o.watch), Prefs: prefsFile(),

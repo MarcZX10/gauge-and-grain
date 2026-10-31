@@ -28,7 +28,11 @@ import (
 // Config is everything the TUI needs from the command line.
 type Config struct {
 	Providers []providers.Provider
+	// Detect is the provider detection, when it is already known. DetectCh
+	// delivers it later instead: the dashboard then shows "detecting…" in the
+	// Sources lines until it arrives. Give one of the two.
 	Detect    map[string]providers.Detection
+	DetectCh  <-chan map[string]providers.Detection
 	Prices    *pricing.Table
 	CacheDir  string
 	Filter    agg.Filter
@@ -98,11 +102,13 @@ type model_ struct {
 	ch      chan tea.Msg
 	// gone is closed when the scan that owns ch is replaced: nobody reads its
 	// final message then, so that message must not block the scan goroutine.
-	gone      chan struct{}
-	seq       int // numbers the scans; see scanMsg
-	prog      scan.Progress
-	res       *scan.Result
-	events    []model.Event
+	gone   chan struct{}
+	seq    int // numbers the scans; see scanMsg
+	prog   scan.Progress
+	res    *scan.Result
+	events []model.Event
+	// det is the provider detection; nil until it arrives (see detection).
+	det       map[string]providers.Detection
 	cancelled bool
 	scanTook  time.Duration
 
@@ -151,6 +157,9 @@ type progressMsg scan.Progress
 type doneMsg *scan.Result
 type tickMsg time.Time
 type refreshMsg struct{}
+
+// detectMsg carries the provider detection once the background check ends.
+type detectMsg map[string]providers.Detection
 
 // copiedMsg ends the "copied" status of the copy made at that time.
 type copiedMsg time.Time
@@ -247,7 +256,37 @@ func (m *model_) savePrefs() {
 	}
 }
 
-func (m *model_) Init() tea.Cmd { return tea.Batch(m.startScan(true), tick(), m.refreshLater()) }
+func (m *model_) Init() tea.Cmd {
+	cmds := []tea.Cmd{m.startScan(true), tick(), m.refreshLater()}
+	if m.detection() == nil && m.cfg.DetectCh != nil {
+		cmds = append(cmds, waitDetect(m.cfg.DetectCh))
+	}
+	return tea.Batch(cmds...)
+}
+
+// waitDetect waits for the background detection and reports it.
+func waitDetect(ch <-chan map[string]providers.Detection) tea.Cmd {
+	return func() tea.Msg { return detectMsg(<-ch) }
+}
+
+// detection returns the provider detection, or nil while it is pending.
+func (m *model_) detection() map[string]providers.Detection {
+	if m.det != nil {
+		return m.det
+	}
+	return m.cfg.Detect
+}
+
+// setDetect stores the detection and refreshes what reads it: the render
+// context (its notes count) and every view, whose cache is keyed by ver.
+func (m *model_) setDetect(d map[string]providers.Detection) {
+	m.det = d
+	if m.cx != nil {
+		m.cx.Detect = d
+		m.warn, _ = render.NoteCounts(m.cx)
+	}
+	m.ver++
+}
 
 // refreshLater schedules the next background rescan. Unchanged files come
 // from the cache, so a rescan is cheap; the view keeps its place meanwhile.
@@ -326,7 +365,7 @@ func (m *model_) recompute() {
 	}
 	m.sum = m.idx.Summarize(f)
 	m.sortGroups()
-	m.cx = &render.Ctx{Sum: m.sum, Detect: m.cfg.Detect, Files: m.res.Files, Stats: m.res.Stats,
+	m.cx = &render.Ctx{Sum: m.sum, Detect: m.detection(), Files: m.res.Files, Stats: m.res.Stats,
 		Cached: m.res.Cached, Parsed: m.res.Parsed, Duplicate: m.res.Duplicate, Errors: len(m.res.Errors),
 		Cancelled: m.cancelled, Prices: m.cfg.Prices, RangeName: m.rangeNm, Filters: m.filterText()}
 	m.warn, _ = render.NoteCounts(m.cx)
@@ -361,6 +400,8 @@ func (m *model_) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.Update(msg.msg)
+	case detectMsg:
+		m.setDetect(map[string]providers.Detection(msg))
 	case progressMsg:
 		m.prog = scan.Progress(msg)
 		return m, listen(m.seq, m.ch)
@@ -1442,11 +1483,14 @@ func (m *model_) prevSpan() string {
 
 func (m *model_) sourcesLine() string {
 	t := m.cfg.Theme
+	if m.detection() == nil {
+		return t.Dim("Sources ") + t.Dim("detecting…")
+	}
 	var parts []string
 	missing := 0
 	for _, p := range providers.All() {
 		id := p.ID()
-		d, ok := m.cfg.Detect[id]
+		d, ok := m.detection()[id]
 		if !ok {
 			continue
 		}
@@ -1625,9 +1669,12 @@ func (m *model_) notesLines() []string {
 	// sources: tools that were found get a full entry; the rest share one line
 	var sl []string
 	var absent []string
+	if m.detection() == nil {
+		sl = append(sl, t.Dim("detecting…"))
+	}
 	for _, p := range providers.All() {
 		id := p.ID()
-		d, ok := m.cfg.Detect[id]
+		d, ok := m.detection()[id]
 		if !ok {
 			continue
 		}
