@@ -379,6 +379,34 @@ func TestEscCancelsARefreshWithoutANewScan(t *testing.T) {
 	}
 }
 
+// r with data on screen rescans in the background: the view stays, the keys
+// keep working, and Esc stops the rescan with the last complete view kept.
+func TestRescanKeepsTheViewAndEscKeepsIt(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	press(m, "4", "r")
+	if m.loading || !m.refreshing {
+		t.Fatalf("r with data loaded must refresh in place: loading=%v refreshing=%v", m.loading, m.refreshing)
+	}
+	if v := render.Strip(m.View()); strings.Contains(v, "Reading local usage files") || !strings.Contains(v, "Models") {
+		t.Errorf("the view must stay on the data during a rescan:\n%s", v)
+	}
+	press(m, "down")
+	if m.cursor[tabModels] != 1 {
+		t.Errorf("keys must work during a rescan: cursor=%d", m.cursor[tabModels])
+	}
+	press(m, "esc")
+	c := *m.res
+	c.Cancelled = true
+	m.Update(doneMsg(&c))
+	if m.loading || m.refreshing || m.tab != tabModels {
+		t.Errorf("Esc must end the rescan and keep the view: loading=%v refreshing=%v tab=%d", m.loading, m.refreshing, m.tab)
+	}
+	if v := render.Strip(m.View()); strings.Contains(v, "Reading local usage files") || !strings.Contains(v, "Models") {
+		t.Errorf("the last complete view must stay after Esc:\n%s", v)
+	}
+}
+
 // A cancelled first scan with stale files starts no full rescan.
 func TestCancelledFirstScanStartsNoFollowUp(t *testing.T) {
 	m := fixtureModel(t, render.Theme{ASCII: true})

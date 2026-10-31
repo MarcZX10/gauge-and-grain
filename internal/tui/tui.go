@@ -496,6 +496,10 @@ func (m *model_) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.resetView()
 		m.applyPeriod()
 	case "r", "R":
+		if m.res != nil { // data on screen: rescan in the background, like the timer
+			m.refreshing = true
+			return m, m.startScan(false)
+		}
 		m.loading, m.cancelled, m.prog, m.started = true, false, scan.Progress{}, time.Now()
 		m.refreshing = false
 		return m, tea.Batch(m.startScan(false), tick())
