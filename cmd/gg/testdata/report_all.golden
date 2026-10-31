@@ -1,0 +1,42 @@
+gauge-and-grain  all time
+
+Tokens    5.8K          input + cache + output, all providers normalised the same way
+Est. cost ≥ $0.01       partial: 200 tokens unpriced (1 model)
+Sessions  4             12 API calls (de-duplicated)
+Sources   Claude Code · OpenAI Codex · 10 other tools not found
+Notes     ⚠ 1 note needs attention · 7 in total · run `gg notes`
+
+TOKEN MIX  what each kind of token means
+  input                    1.2K     20%  ███▏░░░░░░░░░░░░  new, uncached prompt tokens
+  cache read               3.0K     52%  ████████▎░░░░░░░  prompt tokens reused from cache (cheap)
+  cache write              1.0K     17%  ██▊░░░░░░░░░░░░░  stored into cache; priced above input
+  output                    592     10%  █▋░░░░░░░░░░░░░░  generated tokens
+    of which reasoning       84  reasoning tokens: a subset of output, not added again
+  cache hit share: 59% of input-side tokens (from 98% of input that reports caches)
+
+DAILY TREND  tokens per day
+  ▁                             ▆█
+  2026-09-01 ──────────────────────────────────────── 2026-10-02
+  peak 2026-10-02 (2.9K)  ·  3 of 32 days active  ·  avg 1.9K/active day
+
+PROVIDERS  same token definition for all; fields a source lacks are shown as n/a
+  provider                                         tokens   share   est. cost   sess
+  codex                                              3.3K     57%     $0.0058      2  ███████▉░░░░░░
+  claude                               partial       2.5K     43%   ≥ $0.0068      2  ██████░░░░░░░░
+
+MODELS  unpriced = no price known; its tokens are counted but cost is excluded
+  model                                            tokens   share   est. cost   sess
+  gpt-5.4                                            2.4K     41%     $0.0039      1  █████▋░░░░░░░░
+  claude-sonnet-5-5                                  2.3K     39%     $0.0066      1  █████▍░░░░░░░░
+  gpt-6-sol                                           525    9.1%     $0.0012      1  █▎░░░░░░░░░░░░
+  gpt-5                                               395    6.9%     $0.0007      1  ▉░░░░░░░░░░░░░
+  mystery-model-9                     unpriced        200    3.5%    unpriced      1  ▍░░░░░░░░░░░░░
+  claude-haiku-5-5                                     15    0.3%     $0.0000      1  ░░░░░░░░░░░░░░
+  claude-opus-5-5                                       7    0.1%     $0.0001      1  ░░░░░░░░░░░░░░
+
+PROJECTS  working directory the session ran in
+  project                                          tokens   share   est. cost   sess
+  work/gamma                                         2.9K     50%     $0.0051      1  ███████░░░░░░░
+  work/alpha                           partial       2.5K     43%   ≥ $0.0067      1  █████▉░░░░░░░░
+  work/delta                                          395    6.9%     $0.0007      1  ▉░░░░░░░░░░░░░
+  work/beta                                            15    0.3%     $0.0000      1  ░░░░░░░░░░░░░░

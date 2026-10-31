@@ -658,3 +658,38 @@ func TestCursorStaysOnScreen(t *testing.T) {
 		t.Errorf("the selected row %q must be drawn with its marker:\n%s", label, v)
 	}
 }
+
+// The dashboard draws before the provider detection arrives: the Sources
+// lines say so, nothing panics, and the detected tools show once it arrives.
+func TestDetectionPendingThenArrives(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	det := m.cfg.Detect
+	ch := make(chan map[string]providers.Detection, 1)
+	m.cfg.Detect, m.cfg.DetectCh = nil, ch
+	m.recompute()
+	resize(m, 120, 40)
+
+	if m.Init() == nil {
+		t.Fatal("Init must wait for a pending detection")
+	}
+	if v := strings.Join(strings.Fields(m.View()), " "); !strings.Contains(v, "Sources detecting...") {
+		t.Errorf("overview lacks the pending Sources line:\n%s", m.View())
+	}
+	press(m, "n")
+	if v := strings.Join(strings.Fields(m.View()), " "); !strings.Contains(v, "detecting...") || !strings.Contains(v, "Sources") {
+		t.Errorf("notes tab lacks the pending Sources panel:\n%s", m.View())
+	}
+
+	ch <- det
+	m.Update(waitDetect(ch)())
+	v := strings.Join(strings.Fields(m.View()), " ")
+	if strings.Contains(v, "detecting...") {
+		t.Errorf("still pending after the detection arrived:\n%s", m.View())
+	}
+	if !strings.Contains(v, "Claude Code") {
+		t.Errorf("detected tools missing after arrival:\n%s", m.View())
+	}
+	if m.cx.Detect == nil {
+		t.Error("render context did not get the detection")
+	}
+}
