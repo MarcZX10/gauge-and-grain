@@ -5,6 +5,18 @@ and versions follow [Semantic Versioning](https://semver.org/). Dates are the da
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-31
+
+### Changed
+
+- The start-up no longer waits up to five seconds for the terminal's background colour when the terminal does not answer.
+  The first frame now appears at once, and the data a moment later.
+- The README install commands use the release assets (`releases/latest/download/`), which `v0.7.0` published.
+
+### Fixed
+
+- `go.mod` lists `lipgloss` as a direct dependency.
+
 ## [0.7.0] - 2026-10-30
 
 ### Security
