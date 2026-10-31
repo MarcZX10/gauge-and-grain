@@ -191,7 +191,7 @@ func TestOtherToolsEndToEnd(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &doc); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	want := map[string]int64{"gemini": 1680 + 365, "qwen": 1185, "pi": 5660, "cline": 660, "roo": 105, "kilo": 25, "zoo": 2, "opencode": 12}
+	want := map[string]int64{"gemini": 1680 + 365, "qwen": 1185, "pi": 5660, "cline": 660 + 18, "roo": 105, "kilo": 25, "zoo": 2, "opencode": 12}
 	got := map[string]int64{}
 	for _, p := range doc.ByProvider {
 		got[p.Key] = p.Tokens

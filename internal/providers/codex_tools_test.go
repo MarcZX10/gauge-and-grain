@@ -113,3 +113,64 @@ func TestCodexLocalShellCallIsCounted(t *testing.T) {
 		t.Fatalf("want l1=local_shell (the call without id is skipped), got %+v", evs)
 	}
 }
+
+// Calls after the last usage record of a file are not lost: they are counted
+// once as a tool-only event (no tokens). Resuming at any line gives the same
+// events, so the tool-only event is not counted twice.
+func TestCodexCallsWithoutLaterUsageAreCountedAtEnd(t *testing.T) {
+	lines := []string{
+		`{"timestamp":"2026-10-03T00:00:00Z","type":"turn_context","payload":{"model":"gpt-5.4","cwd":"/w/a"}}`,
+		`{"timestamp":"2026-10-03T00:00:01Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"c1"}}`,
+		`{"timestamp":"2026-10-03T00:00:02Z","type":"token_usage_record","payload":{"response_id":"r1","usage":{"input_tokens":10,"output_tokens":5}}}`,
+		`{"timestamp":"2026-10-03T00:00:03Z","type":"response_item","payload":{"type":"function_call","name":"apply_patch","call_id":"c2"}}`,
+		`{"timestamp":"2026-10-03T00:00:04Z","type":"response_item","payload":{"type":"function_call","name":"shell","call_id":"c3"}}`,
+	}
+	evs, _, err := ParseAll(Codex{}, "/x/s.jsonl", strings.NewReader(strings.Join(lines, "\n")+"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 2 || evs[0].Tools != "c1=exec_command" || evs[0].Input != 10 {
+		t.Fatalf("usage event: %+v", evs)
+	}
+	tail := evs[1]
+	if tail.Tools != "c2=apply_patch,c3=shell" || tail.Total() != 0 || tail.Time.IsZero() {
+		t.Fatalf("tool-only event: %+v", tail)
+	}
+	if got := model.ToolNames(tail.Tools); strings.Join(got, ",") != "apply_patch,shell" {
+		t.Errorf("names: %v", got)
+	}
+	for cut := 1; cut < len(lines); cut++ {
+		p1 := Codex{}.NewParser("/x/s.jsonl", nil)
+		for _, l := range lines[:cut] {
+			p1.Line([]byte(l))
+		}
+		e1, st1 := p1.Result()
+		p2 := Codex{}.NewParser("/x/s.jsonl", &Resume{Events: append([]model.Event(nil), e1...), Stats: st1, State: p1.State()})
+		for _, l := range lines[cut:] {
+			p2.Line([]byte(l))
+		}
+		e2, _ := p2.Result()
+		if !reflect.DeepEqual(e2, evs) {
+			t.Fatalf("resume at line %d differs:\n%+v\n%+v", cut, e2, evs)
+		}
+	}
+}
+
+// A wrong-typed name on a usage record or a call item does not drop the usage.
+func TestCodexBadNameKeepsUsage(t *testing.T) {
+	lines := []string{
+		`{"timestamp":"2026-10-03T00:00:00Z","type":"turn_context","payload":{"model":"gpt-5.4","cwd":"/w/a"}}`,
+		`{"timestamp":"2026-10-03T00:00:01Z","type":"response_item","payload":{"type":"function_call","name":5,"call_id":"c1"}}`,
+		`{"timestamp":"2026-10-03T00:00:02Z","type":"token_usage_record","payload":{"response_id":"r1","cwd":7,"session_id":["x"],"usage":{"input_tokens":10,"output_tokens":5}}}`,
+	}
+	evs, st, err := ParseAll(Codex{}, "/x/s.jsonl", strings.NewReader(strings.Join(lines, "\n")+"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || st.Malformed != 0 {
+		t.Fatalf("want one event and no malformed line, got %d events, malformed=%d", len(evs), st.Malformed)
+	}
+	if e := evs[0]; e.Input != 10 || e.Output != 5 || e.Project != "/w/a" || e.Tools != "" {
+		t.Errorf("event: %+v", e)
+	}
+}

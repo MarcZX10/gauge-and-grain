@@ -47,7 +47,7 @@ var opencodeFamily = []OpenCodeFamily{
 
 func (o OpenCodeFamily) ID() string         { return o.id }
 func (o OpenCodeFamily) Name() string       { return o.name }
-func (o OpenCodeFamily) ParserVersion() int { return 2 } // 2: read errors are errors, not partial totals
+func (o OpenCodeFamily) ParserVersion() int { return 3 } // 3: step tokens used for rows over the limit; 2: read errors are errors, not partial totals
 func (o OpenCodeFamily) Experimental() string {
 	return "parser follows OpenCode's database/message format as documented by third-party readers; not verified against a real installation"
 }
@@ -361,16 +361,21 @@ func (o OpenCodeFamily) ParsePath(ctx context.Context, path string) ([]model.Eve
 		}
 	}
 	steps := map[string]*ocTokens{} // message id -> summed step-finish tokens
-	if rows, err := db.QueryContext(ctx, "SELECT message_id, data FROM part WHERE length(data) <= ? AND json_extract(data, '$.type') = 'step-finish'", maxRowData); err == nil {
+	if rows, err := db.QueryContext(ctx, "SELECT message_id, CASE WHEN length(data) <= ? THEN data END FROM part WHERE json_extract(data, '$.type') = 'step-finish'", maxRowData); err == nil {
 		for rows.Next() {
-			var id, data string
+			var id string
+			var data sql.NullString
 			if rows.Scan(&id, &data) != nil {
+				continue
+			}
+			if !data.Valid { // over the row limit: its tokens are not counted
+				st.Oversized++
 				continue
 			}
 			var part struct {
 				Tokens *ocTokens `json:"tokens"`
 			}
-			if json.Unmarshal([]byte(data), &part) != nil || part.Tokens == nil {
+			if json.Unmarshal([]byte(data.String), &part) != nil || part.Tokens == nil {
 				st.Malformed++
 				continue
 			}
@@ -398,8 +403,17 @@ func (o OpenCodeFamily) ParsePath(ctx context.Context, path string) ([]model.Eve
 			continue
 		}
 		st.Lines++
-		if !data.Valid {
+		if !data.Valid { // the row is over the limit: its step parts still give the tokens
 			st.Oversized++
+			if tok := steps[id]; tok.any() {
+				// Model and role are in the row, which was not read: the model is
+				// unknown. Step parts belong to assistant replies.
+				m := ocMessage{ID: id, SessionID: sid, Role: "assistant"}
+				m.Time.Created = created
+				if e, ok := o.event(&m, tok, projects[sid], &st); ok {
+					evs = append(evs, e)
+				}
+			}
 			continue
 		}
 		var m ocMessage

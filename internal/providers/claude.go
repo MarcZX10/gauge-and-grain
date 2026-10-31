@@ -16,7 +16,7 @@ import (
 //   - Only "assistant" records with message.usage are billed calls.
 //   - Claude Code writes one record per content block, repeating the same
 //     message.id and the same usage; we count each call once and
-//     keep the largest counter seen.
+//     keep the largest counter seen. A record without a message.id is malformed.
 //   - input_tokens excludes cache; cache_creation_input_tokens and
 //     cache_read_input_tokens are separate. thinking_tokens is a subset of
 //     output_tokens.
@@ -26,7 +26,7 @@ type Claude struct{}
 
 func (Claude) ID() string         { return "claude" }
 func (Claude) Name() string       { return "Claude Code" }
-func (Claude) ParserVersion() int { return 4 } // 4: key on message id only; 3: tool uses, one per id
+func (Claude) ParserVersion() int { return 5 } // 5: no uuid fallback key, malformed without message id, wrong-typed fields keep the usage; 4: key on message id only; 3: tool uses, one per id
 func (Claude) Fields() Fields {
 	return Fields{CacheRead: true, CacheWrite: true, Reasoning: true,
 		Note: "reasoning shown only when the log carries thinking_tokens"}
@@ -67,15 +67,15 @@ func (c Claude) Detect() Detection {
 type claudeLine struct {
 	Type      string `json:"type"`
 	Timestamp string `json:"timestamp"`
-	SessionID string `json:"sessionId"`
-	SessionU  string `json:"session_id"`
-	CWD       string `json:"cwd"`
-	RequestID string `json:"requestId"`
-	UUID      string `json:"uuid"`
+	// The names are decoded by looseString and the content by claudeTools:
+	// a wrong-typed field among them must not drop the usage of the record.
+	SessionID json.RawMessage `json:"sessionId"`
+	SessionU  json.RawMessage `json:"session_id"`
+	CWD       json.RawMessage `json:"cwd"`
 	Message   *struct {
-		ID      string        `json:"id"`
-		Model   string        `json:"model"`
-		Content []claudeBlock `json:"content"`
+		ID      string          `json:"id"`
+		Model   string          `json:"model"`
+		Content json.RawMessage `json:"content"`
 		Usage   *struct {
 			Input      *int64 `json:"input_tokens"`
 			Output     *int64 `json:"output_tokens"`
@@ -101,9 +101,20 @@ type claudeBlock struct {
 	} `json:"input"`
 }
 
+// looseString reads a string field that is left out when it has another type.
+func looseString(raw json.RawMessage) string {
+	var s string
+	_ = json.Unmarshal(raw, &s)
+	return s
+}
+
 // claudeTools names the tools one message uses: each tool_use block, with a
-// skill shown as skill:<name> (the Skill tool takes the skill's name).
-func claudeTools(content []claudeBlock) string {
+// skill shown as skill:<name> (the Skill tool takes the skill's name). A
+// wrong-typed field keeps the rest of its block (the skill name is then
+// missing); partial results are kept.
+func claudeTools(raw json.RawMessage) string {
+	var content []claudeBlock
+	_ = json.Unmarshal(raw, &content)
 	var uses []string
 	for _, b := range content {
 		if b.Type != "tool_use" {
@@ -182,8 +193,8 @@ func (p *claudeParser) Line(line []byte) {
 	e := model.Event{
 		Provider:  "claude",
 		Model:     m.Model,
-		Session:   firstNonEmpty(l.SessionID, l.SessionU, p.fileSession),
-		Project:   l.CWD,
+		Session:   firstNonEmpty(looseString(l.SessionID), looseString(l.SessionU), p.fileSession),
+		Project:   looseString(l.CWD),
 		Time:      ts,
 		Input:     clamp(val(u.Input), st),
 		Output:    clamp(val(u.Output), st),
@@ -204,16 +215,12 @@ func (p *claudeParser) Line(line []byte) {
 		e.Reasoning = clamp(*u.Details.Thinking, st)
 		e.Has |= model.HasReasoning
 	}
-	switch {
-	case m.ID != "":
-		// requestId is left out: some lines of one call lack it.
-		e.Key = "claude:" + m.ID
-	case l.UUID != "":
-		e.Key = "claude:uuid:" + l.UUID
-	default:
-		st.Malformed++ // no identity: cannot be deduplicated safely
+	if m.ID == "" { // no identity: one response written as several blocks cannot be counted once
+		st.Malformed++
 		return
 	}
+	// requestId is left out: some lines of one call lack it.
+	e.Key = "claude:" + m.ID
 	if i, ok := p.idx[e.Key]; ok {
 		p.evs[i].Merge(&e)
 		return

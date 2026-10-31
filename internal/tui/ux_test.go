@@ -1,17 +1,22 @@
 package tui
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/MarcZX10/gauge-and-grain/internal/agg"
+	"github.com/MarcZX10/gauge-and-grain/internal/providers"
 	"github.com/MarcZX10/gauge-and-grain/internal/render"
+	"github.com/MarcZX10/gauge-and-grain/internal/scan"
 )
 
 // A provider filter given on the command line is shown, and "c" clears it.
@@ -376,6 +381,295 @@ func TestEscCancelsARefreshWithoutANewScan(t *testing.T) {
 	}
 	if m.refreshing || strings.Contains(m.status(), "PARTIAL") {
 		t.Errorf("a cancelled refresh ends quietly: refreshing=%v status=%q", m.refreshing, m.status())
+	}
+}
+
+// r with data on screen rescans in the background: the view stays, the keys
+// keep working, and Esc stops the rescan with the last complete view kept.
+func TestRescanKeepsTheViewAndEscKeepsIt(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	press(m, "4", "r")
+	if m.loading || !m.refreshing {
+		t.Fatalf("r with data loaded must refresh in place: loading=%v refreshing=%v", m.loading, m.refreshing)
+	}
+	if v := render.Strip(m.View()); strings.Contains(v, "Reading local usage files") || !strings.Contains(v, "Models") {
+		t.Errorf("the view must stay on the data during a rescan:\n%s", v)
+	}
+	press(m, "down")
+	if m.cursor[tabModels] != 1 {
+		t.Errorf("keys must work during a rescan: cursor=%d", m.cursor[tabModels])
+	}
+	press(m, "esc")
+	c := *m.res
+	c.Cancelled = true
+	m.Update(doneMsg(&c))
+	if m.loading || m.refreshing || m.tab != tabModels {
+		t.Errorf("Esc must end the rescan and keep the view: loading=%v refreshing=%v tab=%d", m.loading, m.refreshing, m.tab)
+	}
+	if v := render.Strip(m.View()); strings.Contains(v, "Reading local usage files") || !strings.Contains(v, "Models") {
+		t.Errorf("the last complete view must stay after Esc:\n%s", v)
+	}
+}
+
+// gatedClaude holds its scan at the start until the gate opens, so a test
+// decides when the scan produces its messages.
+type gatedClaude struct {
+	providers.Claude
+	gate chan struct{}
+}
+
+func (g gatedClaude) Files() []string {
+	<-g.gate
+	return g.Claude.Files()
+}
+
+// A scan that was replaced while its listener had stopped reading must end,
+// even when its channel is full: its final message has no reader.
+func TestReplacedScanDoesNotBlockForever(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	gate := make(chan struct{})
+	m.cfg.Providers = []providers.Provider{gatedClaude{providers.Claude{}, gate}}
+	before := runtime.NumGoroutine()
+	m.startScan(false)
+	for i := 0; i < cap(m.ch); i++ { // the listener is gone: the buffer fills up
+		m.ch <- progressMsg{}
+	}
+	m.startScan(false) // replaces the first scan
+	close(gate)
+	for deadline := time.Now().Add(5 * time.Second); runtime.NumGoroutine() > before; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("replaced scan goroutines did not end: %d before, %d after", before, runtime.NumGoroutine())
+		}
+	}
+}
+
+// A scan that parsed nothing new keeps the index it had; a scan that parsed
+// a file, or saw other files, builds a new one.
+func TestUnchangedScanKeepsTheIndex(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	idx := m.idx
+	same := *m.res
+	same.Parsed, same.Stale = 0, 0
+	m.Update(doneMsg(&same))
+	if m.idx != idx {
+		t.Error("a scan with nothing parsed must keep the index")
+	}
+	if m.sum.Total.Tokens() == 0 {
+		t.Fatal("the kept index must still answer the view")
+	}
+	changed := same
+	changed.Parsed = 1
+	m.Update(doneMsg(&changed))
+	if m.idx == idx {
+		t.Error("a scan that parsed a file must rebuild the index")
+	}
+	idx = m.idx
+	more := *m.res
+	more.Parsed, more.Files = 0, map[string]int{"claude": 99}
+	m.Update(doneMsg(&more))
+	if m.idx == idx {
+		t.Error("a scan that sees other files must rebuild the index")
+	}
+}
+
+// s re-sorts the summed groups: no new summary, the same order as a summary
+// sorted by cost from scratch, and the token order again on the second press.
+func TestSortToggleReordersWithoutSummarizing(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	press(m, "4")
+	byTok := labelsOf(m.groups())
+	sum := m.sum
+	press(m, "s")
+	if m.sum != sum {
+		t.Error("s must reorder the summary it has, not summarize again")
+	}
+	ref := fixtureModel(t, render.Theme{ASCII: true})
+	ref.sort = byCost
+	ref.recompute()
+	if got, want := labelsOf(m.groups()), labelsOf(ref.sum.ByModel); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("cost order after s: %v, want %v", got, want)
+	}
+	if strings.Join(labelsOf(m.groups()), "|") == strings.Join(byTok, "|") {
+		t.Fatal("the test needs a model order that depends on the sort key")
+	}
+	press(m, "s")
+	if got := labelsOf(m.groups()); strings.Join(got, "|") != strings.Join(byTok, "|") {
+		t.Errorf("token order after a second s: %v, want %v", got, byTok)
+	}
+}
+
+// The footer offers only the keys that act on the current tab and mode:
+// export writes tables only, Enter drills tables only, and r and e are typed
+// in the period picker or close the help.
+func TestFooterOffersOnlyWhatActsHere(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	footer := func() string { return render.Strip(strings.Join(m.footer(), "\n")) }
+	for _, k := range []string{"1", "7", "8"} { // Overview, Tools, Notes: text views
+		press(m, k)
+		if f := footer(); strings.Contains(f, "export") || strings.Contains(f, "drill") || !strings.Contains(f, "rescan") {
+			t.Errorf("tab %s: footer must show rescan and neither export nor drill: %s", k, f)
+		}
+	}
+	resize(m, 200, 40) // wide enough for every hint of a table
+	press(m, "2")
+	if f := footer(); !strings.Contains(f, "export") || !strings.Contains(f, "drill") {
+		t.Errorf("Daily: footer must offer export and drill: %s", f)
+	}
+	press(m, "t")
+	if f := footer(); strings.Contains(f, "export") || strings.Contains(f, "rescan") {
+		t.Errorf("picker: r and e are typed there, the footer must not offer them: %s", f)
+	}
+	press(m, "esc", "?")
+	if f := footer(); strings.Contains(f, "export") || strings.Contains(f, "rescan") {
+		t.Errorf("help: the footer must not offer r or e: %s", f)
+	}
+}
+
+// The first scan estimates its time left only after 3 seconds and 5 % of its
+// work, from the share done and the time taken; the loading box shows it.
+func TestScanETA(t *testing.T) {
+	for _, c := range []struct {
+		elapsed time.Duration
+		done    float64
+		want    time.Duration
+		ok      bool
+	}{
+		{3 * time.Second, 0.25, 9 * time.Second, true},
+		{10 * time.Second, 0.5, 10 * time.Second, true},
+		{2 * time.Second, 0.5, 0, false},
+		{10 * time.Second, 0.04, 0, false},
+		{10 * time.Second, 0.05, 190 * time.Second, true},
+		{10 * time.Second, 1, 0, false},
+	} {
+		got, ok := scanETA(c.elapsed, c.done)
+		if ok != c.ok || got != c.want {
+			t.Errorf("scanETA(%v, %v) = %v, %v; want %v, %v", c.elapsed, c.done, got, ok, c.want, c.ok)
+		}
+	}
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 100, 30)
+	m.loading = true
+	m.prog = scan.Progress{Done: 1, Total: 4}
+	m.started = time.Now().Add(-10 * time.Second)
+	if v := render.Strip(m.View()); !strings.Contains(v, "about 30 s left") {
+		t.Errorf("the loading box must estimate the time left:\n%s", v)
+	}
+	m.started = time.Now().Add(-2 * time.Second)
+	if v := render.Strip(m.View()); strings.Contains(v, "left") {
+		t.Errorf("no estimate before 3 seconds:\n%s", v)
+	}
+}
+
+// y copies the selected table row with OSC 52 and says "copied" for a few
+// seconds; the sequence is the base64 of the text, with the clipboard target.
+func TestCopyRowSendsOSC52AndSaysCopied(t *testing.T) {
+	if got, want := osc52("hi there"), "\x1b]52;c;aGkgdGhlcmU=\a"; got != want {
+		t.Errorf("osc52 = %q, want %q", got, want)
+	}
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	press(m, "4", "down")
+	row := m.selectedRowText()
+	if label := m.groups()[m.cursor[tabModels]].Label; row == "" || !strings.Contains(row, label) {
+		t.Fatalf("the selected row text must name its row %q: %q", label, row)
+	}
+	var out bytes.Buffer
+	clipboardOut = &out
+	t.Cleanup(func() { clipboardOut = os.Stdout })
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if cmd == nil || !strings.Contains(m.status(), "copied") {
+		t.Fatalf("y must copy and say so: cmd=%v status=%q", cmd != nil, m.status())
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok || len(batch) == 0 {
+		t.Fatalf("y must run the copy and the timer: %T", cmd())
+	}
+	batch[0]() // the copy; the timer waits a few seconds and is not run here
+	if out.String() != osc52(row) {
+		t.Errorf("the copy wrote %q, want %q", out.String(), osc52(row))
+	}
+	m.copied = time.Now().Add(-2 * copiedFor)
+	if strings.Contains(m.status(), "copied") {
+		t.Error("the status must stop saying copied after a few seconds")
+	}
+	m.copied = time.Now() // a newer copy
+	m.Update(copiedMsg(m.copied.Add(-time.Second)))
+	if m.copied.IsZero() {
+		t.Error("the timer of an older copy must not end a newer one")
+	}
+	m.Update(copiedMsg(m.copied))
+	if !m.copied.IsZero() {
+		t.Error("the timer of the current copy ends it")
+	}
+	press(m, "1") // Overview has no row to copy
+	out.Reset()
+	press(m, "y")
+	if out.Len() != 0 || !strings.Contains(m.note, "nothing to copy") {
+		t.Errorf("y on a text view must copy nothing and say so: wrote %q note=%q", out.String(), m.note)
+	}
+}
+
+// Day groups add up by calendar month, and the month's change is against the
+// month before, with its cost as the base; unpriced usage makes it n/a.
+func TestMonthlyGroupingAndChange(t *testing.T) {
+	day := func(key string, input int64, cost float64, unpriced int64, sessions ...string) *agg.Group {
+		g := &agg.Group{Key: key, Label: key, Input: input, Cost: cost, PricedTok: input - unpriced, UnpricedTok: unpriced,
+			Sessions: map[string]struct{}{}, Models: map[string]struct{}{}, Providers: map[string]struct{}{}, Unpriced: map[string]int64{}}
+		for _, s := range sessions {
+			g.Sessions[s] = struct{}{}
+		}
+		return g
+	}
+	months := monthGroups([]*agg.Group{
+		day("2026-08-31", 100, 1, 0, "a"),
+		day("2026-09-01", 200, 2, 0, "a", "b"),
+		day("2026-09-30", 100, 1, 0, "b"),
+		day("2026-10-01", 300, 4.5, 0, "c"),
+		day("2026-11-01", 50, 1, 50, "d"),
+	})
+	if len(months) != 4 {
+		t.Fatalf("four calendar months, got %d", len(months))
+	}
+	sep := months[1]
+	if sep.Key != "2026-09" || sep.Tokens() != 300 || sep.Cost != 3 || len(sep.Sessions) != 2 {
+		t.Errorf("September: key=%s tokens=%d cost=%v sessions=%d", sep.Key, sep.Tokens(), sep.Cost, len(sep.Sessions))
+	}
+	th := render.Theme{ASCII: true}
+	if got := render.Strip(monthChange(th, months[0], nil)); !strings.Contains(got, "first month") {
+		t.Errorf("the first month has no base: %q", got)
+	}
+	if got := render.Strip(monthChange(th, sep, months[0])); !strings.Contains(got, "^ 200%") || !strings.Contains(got, "vs $1.00") {
+		t.Errorf("September against August: %q", got)
+	}
+	if got := render.Strip(monthChange(th, months[2], sep)); !strings.Contains(got, "^ 50%") || !strings.Contains(got, "vs $3.00") {
+		t.Errorf("October against September: %q", got)
+	}
+	if got := render.Strip(monthChange(th, months[3], months[2])); !strings.Contains(got, "n/a") {
+		t.Errorf("an incomplete month gives n/a: %q", got)
+	}
+	if got := render.Strip(monthChange(th, months[2], months[3])); !strings.Contains(got, "n/a") {
+		t.Errorf("a change against an incomplete month gives n/a: %q", got)
+	}
+}
+
+// The Monthly tab is the ninth: it lists the months of the period, newest first.
+func TestMonthlyTabListsTheMonths(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	press(m, "9")
+	if m.tab != tabMonthly {
+		t.Fatalf("9 must open the Monthly tab: tab=%d", m.tab)
+	}
+	v := render.Strip(m.View())
+	if i, j := strings.Index(v, "2026-10"), strings.Index(v, "2026-09"); i < 0 || j < 0 || i > j {
+		t.Errorf("the Monthly tab must list October and September, newest first:\n%s", v)
+	}
+	if strings.Contains(render.Strip(strings.Join(m.footer(), "\n")), "export") {
+		t.Error("Monthly is a text view: export must not be offered")
 	}
 }
 

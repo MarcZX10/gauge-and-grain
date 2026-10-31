@@ -30,7 +30,7 @@ assumption are in `testdata/`, with expected numbers worked out by hand in the t
 5. Records whose model starts with `<` (e.g. `<synthetic>`) are not API calls and are skipped.
 6. Project = the record's `cwd`.
 
-**Limitations:** records without a `message.id` and `uuid` cannot be de-duplicated safely and are
+**Limitations:** records without a `message.id` cannot be de-duplicated safely and are
 counted as malformed. When a record has no 5-minute/1-hour cache TTL breakdown, its cache writes are priced at the
 5-minute rate. Usage from Claude.ai chat, Claude Desktop chat, or the
 API outside Claude Code is not in these files.
@@ -60,6 +60,8 @@ API outside Claude Code is not in these files.
 5. The same `response_id` in several files (archived copy, forked session) is counted once.
 6. Once a file has its first `token_usage_record`, later `token_count` events in that file are ignored (they
    are cumulative views of the same usage). Earlier ones are still counted.
+7. Tool calls are attached to the next usage event. Calls with no usage after them (the end of the file,
+   for instance a session still running) are counted once in a tool-only event with zero tokens.
 
 **Limitations:** background/auto-review models appear under their own names and may be unpriced.
 A session that was killed mid-write can end in a truncated line; it is reported as malformed.
@@ -115,8 +117,9 @@ Code - Insiders, Cursor, Windsurf, VSCodium, Positron, Antigravity and VS Code S
 `kilocode.kilo-code`, `zoocodeorganization.zoo-code`.
 
 **Semantics:** each `api_req_started` message carries `tokensIn` (uncached), `tokensOut`,
-`cacheWrites`, `cacheReads`. Requests still in flight (no token fields), cancelled ones and ones flagged
-`usage_missing` are skipped. The model comes from `task_metadata.json` (Cline, by request time) or the
+`cacheWrites`, `cacheReads`. Requests still in flight (no token fields) and ones flagged `usage_missing` are skipped. A
+**cancelled request is counted when the extension recorded `tokensIn` or `tokensOut` for it**; a cancelled one
+with no tokens is skipped. The model comes from `task_metadata.json` (Cline, by request time) or the
 last `<model>…</model>` in `api_conversation_history.json` (Roo, Kilo, Zoo — so a mid-task model
 switch is attributed to the last model). **No working directory is recorded**, so projects show as
 `(unknown)`. These files change in place, so a changed task is re-read in full.
@@ -128,7 +131,8 @@ switch is attributed to the last model). **No working directory is recorded**, s
 is opened **read-only**; its `-wal` file counts as part of the file for caching.
 
 **Semantics:** assistant `message.data` JSON carries `tokens {input, output, reasoning, cache:{read,write}}`
-(also per `step-finish` part, which is used when the message-level block is empty). `input` excludes
+(also per `step-finish` part, which is used when the message-level block is empty). A message row over 8 MB is not read: its step-finish parts still give its tokens, with the model
+unknown. Step-finish parts over 8 MB are skipped and counted as oversized. `input` excludes
 cache; OpenCode computes `output` as outputTokens − reasoning and bills reasoning at the output rate, so
 reasoning is **added to output** here (and kept as the Reasoning subset). Projects come from
 `session → project.worktree`. If this assumption about `output` is wrong for your version, totals for

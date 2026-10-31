@@ -43,6 +43,13 @@ again. Not modelled: batch/flex/priority tiers, long-context surcharges, discoun
 Prices change. Update `internal/pricing/prices.json` (and its `updated` date) in a PR, or override
 locally as below.
 
+## What-if prices
+
+`gg report --what-if FILE` loads a second prices file, in the same format and with the same checks as `--prices`,
+and adds one line under the cost: `What-if prices (FILE): $X (Y% vs current)`. The rest of the report is unchanged.
+If the range has unpriced models, the what-if cost is marked `≥` and the change reads `n/a`, as the cost row does. Use it to see what the same usage would cost at
+other rates before you change `prices.json`. `gg export` does not take `--what-if`.
+
 ## Adding or overriding prices
 
 Create `<config dir>/gauge-and-grain/prices.json` (path shown by `gg sources`) or pass `--prices FILE`.

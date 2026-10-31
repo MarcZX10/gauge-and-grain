@@ -230,6 +230,7 @@ func Run(ctx context.Context, o Options) *Result {
 		for _, i := range rest {
 			m.add(pending[i])
 		}
+		m.finish()
 	}()
 
 	work := make(chan int)
@@ -318,13 +319,39 @@ type merger struct {
 	keys   []string         // full key of each kept event, to rule out a hash collision
 	clash  map[string]int32 // events whose hash was already taken by another key
 	intern map[string]string
+	// chunks holds the kept events in fixed-size pieces: growing one slice
+	// would copy it again and again (about 0.1 s for a warm start). finish
+	// joins them into res.Events once, at its final size.
+	chunks [][]model.Event
+	n      int32
 }
+
+// chunkLen is how many kept events one chunk holds.
+const chunkLen = 1 << 14
 
 // keyHash is a variable so a test can force collisions.
 var keyHash = maphash.String
 
 func newMerger(res *Result) *merger {
 	return &merger{res: res, seed: maphash.MakeSeed(), idx: map[uint64]int32{}, clash: map[string]int32{}, intern: map[string]string{}}
+}
+
+// at returns the kept event with index i.
+func (m *merger) at(i int32) *model.Event {
+	return &m.chunks[i/chunkLen][i%chunkLen]
+}
+
+// finish moves the kept events into res.Events. It must run after the last add.
+func (m *merger) finish() {
+	if m.n == 0 {
+		return
+	}
+	evs := make([]model.Event, 0, m.n)
+	for _, c := range m.chunks {
+		evs = append(evs, c...)
+	}
+	m.res.Events = evs
+	m.chunks, m.keys = nil, nil
 }
 
 // lookup returns the index of the kept event with this exact key.
@@ -378,20 +405,22 @@ func (m *merger) add(e *entry) {
 	res := m.res
 	res.Stats.Add(e.Stats)
 	res.Skipped += e.Skipped
-	if res.Events == nil && len(e.Events) > 0 {
-		res.Events = make([]model.Event, 0, max(1024, len(e.Events)*4))
-	}
 	for k := range e.Events {
 		ev := e.Events[k]
 		if at, ok := m.lookup(ev.Key); ok {
-			res.Events[at].Merge(&ev)
+			m.at(at).Merge(&ev)
 			res.Duplicate++
 			continue
 		}
-		m.remember(ev.Key, int32(len(res.Events)))
+		m.remember(ev.Key, m.n)
 		ev.Key = ""
 		ev.Provider, ev.Model, ev.Session, ev.Project = m.in(ev.Provider), m.in(ev.Model), m.in(ev.Session), m.in(ev.Project)
-		res.Events = append(res.Events, ev)
+		if len(m.chunks) == 0 || len(m.chunks[len(m.chunks)-1]) == chunkLen {
+			m.chunks = append(m.chunks, make([]model.Event, 0, chunkLen))
+		}
+		last := &m.chunks[len(m.chunks)-1]
+		*last = append(*last, ev)
+		m.n++
 	}
 }
 

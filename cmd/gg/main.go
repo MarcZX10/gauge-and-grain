@@ -71,6 +71,7 @@ Other:
   --prices FILE   extra/override prices (default: <config dir>/prices.json)
   --daily         (report) add a per-day table
   --notes         (report) append the full notes
+  --what-if FILE  (report) one extra line: the same range priced with another prices file
   --watch         (tui) refresh changed data every minute in the background
   -c, --compact   tiny summary: the headline numbers only (report; the TUI starts compact; env GG_COMPACT=1)
 
@@ -101,6 +102,7 @@ type opts struct {
 	watch                   bool
 	format, by              string
 	unpriced                bool
+	whatIf                  string // --what-if: second prices file, report only
 }
 
 func (o *opts) bind(fs *flag.FlagSet) {
@@ -124,6 +126,7 @@ func (o *opts) bind(fs *flag.FlagSet) {
 	fs.StringVar(&o.format, "format", "json", "")
 	fs.StringVar(&o.by, "by", "day", "")
 	fs.BoolVar(&o.unpriced, "unpriced", false, "")
+	fs.StringVar(&o.whatIf, "what-if", "", "")
 	fs.Usage = func() { fmt.Fprintf(os.Stderr, usage, version) }
 }
 
@@ -196,6 +199,11 @@ func main() {
 			return
 		}
 		die(errors.New("usage: gg cache clear"))
+	case "compare":
+		if err := compareCmd(args); err != nil {
+			die(err)
+		}
+		return
 	case "", "report", "notes", "tui", "export", "sources", "prices":
 	default:
 		die(fmt.Errorf("unknown command %q (try `gg help`)", cmd))
@@ -226,20 +234,59 @@ func main() {
 	if daysSet && rangeSet { // one period at a time: never silently ignore one of them
 		die(errors.New("--days cannot be combined with --from, --to or --all"))
 	}
-	fs.Visit(func(f *flag.Flag) { // the export-only flags must not be silently ignored elsewhere
-		switch {
-		case f.Name == "format" && cmd != "export":
-			die(errors.New("--format only applies to `gg export` (see `gg help`)"))
-		case f.Name == "by" && (cmd != "export" || o.format != "csv"):
-			die(errors.New("--by only applies to `gg export --format csv` (see `gg help`)"))
-		}
-	})
+	if cmd == "" { // a bare `gg` is the dashboard on a terminal and the report otherwise
+		cmd = defaultCmd()
+	}
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	if err := checkFlagUse(cmd, &o, set); err != nil { // a flag that would do nothing is an error
+		die(err)
+	}
 	if fs.NArg() > 0 {
 		die(fmt.Errorf("unexpected argument %q", fs.Arg(0)))
 	}
 	if err := run(cmd, &o); err != nil {
 		die(err)
 	}
+}
+
+// flagUses names the one command that uses each flag that is not a filter.
+// Given to any other command the flag would do nothing, so it is rejected.
+// `by` is also checked against the format: it only means something for csv.
+var flagUses = []struct{ flag, cmd, msg string }{
+	{"format", "export", "--format only applies to `gg export` (see `gg help`)"},
+	{"by", "export", "--by only applies to `gg export --format csv` (see `gg help`)"},
+	{"daily", "report", "--daily only applies to `gg report` (see `gg help`)"},
+	{"notes", "report", "--notes only applies to `gg report` (see `gg help`)"},
+	{"what-if", "report", "--what-if only applies to `gg report` (see `gg help`)"},
+	{"watch", "tui", "--watch only applies to `gg tui` (see `gg help`)"},
+	{"unpriced", "prices", "--unpriced only applies to `gg prices` (see `gg help`)"},
+}
+
+// checkFlagUse returns the error for a flag combination that would silently
+// ignore something. set holds the flags the user actually typed.
+func checkFlagUse(cmd string, o *opts, set map[string]bool) error {
+	if set["all"] && (set["from"] || set["to"]) {
+		return errors.New("--all cannot be combined with --from or --to")
+	}
+	for _, u := range flagUses {
+		if !set[u.flag] {
+			continue
+		}
+		if cmd == u.cmd && (u.flag != "by" || o.format == "csv") {
+			continue
+		}
+		return errors.New(u.msg)
+	}
+	return nil
+}
+
+// defaultCmd is the command a bare `gg` runs.
+func defaultCmd() string {
+	if isatty.IsTerminal(os.Stdout.Fd()) && isatty.IsTerminal(os.Stdin.Fd()) {
+		return "tui"
+	}
+	return "report"
 }
 
 func die(err error) {
@@ -340,13 +387,13 @@ func filterFrom(o *opts, now time.Time) (agg.Filter, string, error) {
 				return f, "", err
 			}
 			f.To = t.AddDate(0, 0, 1)
-		} else {
+		} else { // no --to: open-ended, up to and including today
 			f.To = startToday.AddDate(0, 0, 1)
 		}
 		if f.From.IsZero() {
 			name = "up to " + o.to
 		}
-		if !f.From.IsZero() && !f.To.After(f.From) {
+		if o.from != "" && o.to != "" && !f.To.After(f.From) { // only comparable when both are given
 			return f, "", errors.New("--to must not be before --from")
 		}
 	case o.all:
@@ -371,6 +418,12 @@ func loadPrices(o *opts) *pricing.Table {
 			path = def
 		}
 	}
+	return mustLoadPrices(path)
+}
+
+// mustLoadPrices is the one loader for every prices file (--prices, --what-if
+// and the default), so they all get the same validation and errors.
+func mustLoadPrices(path string) *pricing.Table {
 	pt, err := pricing.Load(path)
 	if err != nil {
 		die(err)
@@ -398,13 +451,6 @@ func run(cmd string, o *opts) error {
 	case "prices":
 		return cmdPrices(o)
 	}
-	if cmd == "" {
-		if isatty.IsTerminal(os.Stdout.Fd()) && isatty.IsTerminal(os.Stdin.Fd()) {
-			cmd = "tui"
-		} else {
-			cmd = "report"
-		}
-	}
 	if cmd == "export" && o.format != "json" && o.format != "csv" {
 		return fmt.Errorf("--format must be json or csv")
 	}
@@ -418,6 +464,10 @@ func run(cmd string, o *opts) error {
 		return err
 	}
 	pt := loadPrices(o)
+	var wt *pricing.Table // --what-if: loaded up front so a bad file fails before the scan
+	if o.whatIf != "" {
+		wt = mustLoadPrices(o.whatIf)
+	}
 	cd := cacheDir()
 	if o.noCache {
 		cd = ""
@@ -461,12 +511,53 @@ func run(cmd string, o *opts) error {
 		say(strings.Join(render.Notes(t, c, termWidth(os.Stdout)), "\n"))
 	default:
 		t := theme(o, os.Stdout)
-		sayn(render.Report(t, c, termWidth(os.Stdout), render.ReportOpts{Compact: o.compact, Daily: o.daily, Notes: o.notes}))
+		out := render.Report(t, c, termWidth(os.Stdout), render.ReportOpts{Compact: o.compact, Daily: o.daily, Notes: o.notes})
+		if wt != nil {
+			alt := agg.Summarize(res.Events, f, wt, now.Location())
+			out = withLine(out, whatIfLine(o.whatIf, c.Sum.Total, alt.Total, t))
+		}
+		sayn(out)
 	}
 	if res.Cancelled {
 		os.Exit(130)
 	}
 	return nil
+}
+
+// whatIfLine is the extra line under the cost: the same range priced with the
+// --what-if table, and how far that moves the current estimate.
+func whatIfLine(file string, cur, alt *agg.Group, t render.Theme) string {
+	val := "unpriced"
+	if alt.PricedTok > 0 {
+		val = render.Cost(alt.Cost)
+		if !alt.Complete() {
+			pre := "≥ "
+			if t.ASCII {
+				pre = ">= "
+			}
+			val = pre + val
+		}
+	}
+	note := "n/a vs current"
+	if ch, ok := agg.Change(alt.Cost, cur.Cost); ok && cur.Complete() && alt.Complete() {
+		note = fmt.Sprintf("%+.1f%% vs current", ch*100)
+	}
+	return fmt.Sprintf("  %s %s (%s)", t.Dim(fmt.Sprintf("What-if prices (%s):", file)), val, note)
+}
+
+// withLine puts line right after the "Est. cost" row of a full report. A
+// compact report has no such row, so the line goes at the end.
+func withLine(report, line string) string {
+	i := strings.Index(report, "Est. cost")
+	if i < 0 {
+		return report + line + "\n"
+	}
+	eol := strings.IndexByte(report[i:], '\n')
+	if eol < 0 {
+		return report + "\n" + line + "\n"
+	}
+	at := i + eol + 1
+	return report[:at] + line + "\n" + report[at:]
 }
 
 func describeFilters(o *opts) string {
@@ -569,16 +660,26 @@ func unpricedReport(o *opts, pt *pricing.Table, t render.Theme) error {
 	if o.noCache {
 		cd = ""
 	}
+	// the same period and filters as the rest of gg; with none given, the whole history
+	f := agg.Filter{Providers: o.prov, Models: o.models, Projects: o.projects}
+	rangeName := "all time"
+	if o.periodGiven {
+		if f, rangeName, err = filterFrom(o, time.Now()); err != nil {
+			return err
+		}
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	res := scanWithProgress(ctx, provs, cd, o)
 	seen := map[string]int64{}
 	for i := range res.Events {
-		if pt.Lookup(res.Events[i].Model) == nil {
-			seen[res.Events[i].Provider+"/"+res.Events[i].Model] += res.Events[i].Total()
+		e := &res.Events[i]
+		if pt.Lookup(e.Model) == nil && f.Match(e) {
+			seen[e.Provider+"/"+e.Model] += e.Total()
 		}
 	}
-	say(t.Section("Unpriced models in your history", "tokens counted, cost excluded"))
+	say(t.Section("Unpriced models in your history", "tokens counted, cost excluded · "+rangeName))
+	sayf("  %s %s\n", t.Dim(t.Pad("model", 36)), t.Dim(t.PadL("tokens", 8)))
 	if len(seen) == 0 {
 		say("  none")
 	}
@@ -593,7 +694,7 @@ func unpricedReport(o *opts, pt *pricing.Table, t render.Theme) error {
 		return keys[i] < keys[j]
 	})
 	for _, k := range keys {
-		sayf("  %s %s\n", t.Pad(k, 36), render.Tokens(seen[k]))
+		sayf("  %s %s\n", t.Pad(k, 36), t.PadL(render.Tokens(seen[k]), 8))
 	}
 	if res.Cancelled {
 		say(t.Warn("  PARTIAL: the scan was cancelled, so this list may be incomplete."))

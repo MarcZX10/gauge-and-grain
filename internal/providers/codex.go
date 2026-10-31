@@ -29,7 +29,7 @@ type Codex struct{}
 
 func (Codex) ID() string         { return "codex" }
 func (Codex) Name() string       { return "OpenAI Codex" }
-func (Codex) ParserVersion() int { return 4 } // 4: call items routed first, local_shell; 3: tool calls
+func (Codex) ParserVersion() int { return 5 } // 5: calls with no usage after them are counted at end of file; a bad name keeps the usage; 4: call items routed first, local_shell; 3: tool calls
 func (Codex) Fields() Fields {
 	return Fields{CacheRead: true, CacheWrite: true, Reasoning: true,
 		Note: "cache writes are not billed separately by OpenAI"}
@@ -78,17 +78,23 @@ type codexLine struct {
 	Type      string `json:"type"`
 	Payload   struct {
 		Type       string      `json:"type"`
-		ID         string      `json:"id"`
-		SessionID  string      `json:"session_id"`
-		ThreadID   string      `json:"thread_id"`
 		ResponseID string      `json:"response_id"`
-		CWD        string      `json:"cwd"`
-		Model      string      `json:"model"`
 		Usage      *codexUsage `json:"usage"`
 		Info       *struct {
 			Total *codexUsage `json:"total_token_usage"`
 			Last  *codexUsage `json:"last_token_usage"`
 		} `json:"info"`
+	} `json:"payload"`
+}
+
+// codexMeta holds the names of a line. It is decoded apart from codexLine: a
+// wrong-typed name (a cwd that is a number, say) must not drop the usage.
+type codexMeta struct {
+	Payload struct {
+		ID        string `json:"id"`
+		SessionID string `json:"session_id"`
+		CWD       string `json:"cwd"`
+		Model     string `json:"model"`
 	} `json:"payload"`
 }
 
@@ -140,6 +146,9 @@ type codexState struct {
 	// each call before the usage record of the response that made it, so they
 	// belong to the next usage event (id=name entries, see model.ToolEntry).
 	Pending []string
+	// PendingAt is the time of the first pending call, for the tool-only
+	// event that Result emits when calls are still pending at the end.
+	PendingAt time.Time
 }
 
 // codexParser keeps one list of events: the usage counted from cumulative
@@ -163,11 +172,14 @@ func (Codex) NewParser(path string, r *Resume) Parser {
 				p.s = s
 			}
 		}
-		p.evs = r.Events
-		for i := range p.evs {
-			if k, ok := strings.CutPrefix(p.evs[i].Key, "codex:resp:"); ok {
+		for _, e := range r.Events {
+			if strings.HasPrefix(e.Key, codexToolPrefix) {
+				continue
+			}
+			if k, ok := strings.CutPrefix(e.Key, "codex:resp:"); ok {
 				p.seenResp[k] = true
 			}
+			p.evs = append(p.evs, e)
 		}
 	}
 	return p
@@ -179,7 +191,25 @@ func (p *codexParser) State() []byte {
 	return b.Bytes()
 }
 
-func (p *codexParser) Result() ([]model.Event, model.ParseStats) { return p.evs, p.st }
+// Result also emits the calls still pending at the end of the file as a
+// tool-only event (no tokens). Pending is not cleared: the next usage event
+// takes the calls, and the tool-only event is then gone from the next Result.
+// Its key is built from the calls, so the same calls in an archived copy of
+// the file count once.
+func (p *codexParser) Result() ([]model.Event, model.ParseStats) {
+	evs := p.evs
+	if len(p.s.Pending) > 0 {
+		t := strings.Join(p.s.Pending, ",")
+		e := model.Event{Provider: "codex", Model: firstNonEmpty(p.s.CurModel, "unknown"), Session: p.s.Session,
+			Project: p.s.CWD, Time: p.s.PendingAt, Key: codexToolPrefix + p.s.Session + ":" + t, Tools: t}
+		evs = append(evs[:len(evs):len(evs)], e) // a copy: p.evs must not keep it
+	}
+	return evs, p.st
+}
+
+// codexToolPrefix marks the tool-only events of Result. They are not state:
+// a resumed parser drops them (their calls are in Pending) and emits them again.
+const codexToolPrefix = "codex:tools:"
 
 func (p *codexParser) Line(line []byte) {
 	st := &p.st
@@ -201,20 +231,23 @@ func (p *codexParser) Line(line []byte) {
 		st.Malformed++
 		return
 	}
+	var m codexMeta
+	_ = json.Unmarshal(line, &m) // partial names are kept; a bad name is left out
 	pl := &l.Payload
+	nm := &m.Payload
 	switch l.Type {
 	case "session_meta":
-		p.s.Session = firstNonEmpty(pl.SessionID, pl.ID, p.s.Session)
-		if pl.CWD != "" {
-			p.s.CWD = pl.CWD
+		p.s.Session = firstNonEmpty(nm.SessionID, nm.ID, p.s.Session)
+		if nm.CWD != "" {
+			p.s.CWD = nm.CWD
 		}
 		return
 	case "turn_context":
-		if pl.Model != "" {
-			p.s.CurModel = pl.Model
+		if nm.Model != "" {
+			p.s.CurModel = nm.Model
 		}
-		if pl.CWD != "" {
-			p.s.CWD = pl.CWD
+		if nm.CWD != "" {
+			p.s.CWD = nm.CWD
 		}
 		return
 	}
@@ -224,7 +257,7 @@ func (p *codexParser) Line(line []byte) {
 		return
 	}
 	base := model.Event{Provider: "codex", Model: firstNonEmpty(p.s.CurModel, "unknown"),
-		Session: firstNonEmpty(pl.SessionID, p.s.Session), Project: p.s.CWD, Time: ts}
+		Session: firstNonEmpty(nm.SessionID, p.s.Session), Project: p.s.CWD, Time: ts}
 	switch {
 	case l.Type == "token_usage_record":
 		if pl.ResponseID == "" {
@@ -292,9 +325,8 @@ type codexCall struct {
 // skipped.
 func (p *codexParser) addCall(line []byte) bool {
 	var c codexCall
-	if json.Unmarshal(line, &c) != nil {
-		return false
-	}
+	_ = json.Unmarshal(line, &c) // a wrong-typed field leaves the rest; a line that is not JSON leaves Type empty
+
 	var entry string
 	switch c.Payload.Type {
 	case "function_call", "custom_tool_call":
@@ -312,6 +344,9 @@ func (p *codexParser) addCall(line []byte) bool {
 		entry = model.ToolEntry("ws:"+c.Timestamp, strings.TrimSuffix(c.Payload.Type, "_call"))
 	default:
 		return false
+	}
+	if len(p.s.Pending) == 0 {
+		p.s.PendingAt, _ = time.Parse(time.RFC3339Nano, c.Timestamp)
 	}
 	p.s.Pending = append(p.s.Pending, entry)
 	return true

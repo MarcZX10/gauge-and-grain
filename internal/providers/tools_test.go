@@ -74,3 +74,25 @@ func TestMergeToolsUnionsByID(t *testing.T) {
 		t.Errorf("union = %v", got)
 	}
 }
+
+// A wrong-typed field among the content or the names of a record (a tool input
+// that is a string, a cwd that is a number) does not drop its valid usage.
+func TestClaudeBadUnrelatedFieldKeepsUsage(t *testing.T) {
+	line := `{"type":"assistant","sessionId":"s","cwd":42,"timestamp":"2026-10-03T00:00:00Z","message":{"id":"m9","model":"claude-opus-5-5",` +
+		`"content":[{"type":"tool_use","id":"t1","name":"Bash","input":"ls -la"},{"type":"tool_use","id":"t2","name":"Skill","input":{"skill":"review"}}],` +
+		`"usage":{"input_tokens":3,"output_tokens":4}}}`
+	evs, st, err := ParseAll(Claude{}, "/x/s.jsonl", strings.NewReader(line+"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || st.Malformed != 0 {
+		t.Fatalf("want one event and no malformed line, got %d events, malformed=%d", len(evs), st.Malformed)
+	}
+	e := evs[0]
+	if e.Input != 3 || e.Output != 4 || e.Session != "s" || e.Project != "" {
+		t.Errorf("usage or names: %+v", e)
+	}
+	if e.Tools != "t1=Bash,t2=skill:review" {
+		t.Errorf("tools = %q: the block with a string input keeps its name", e.Tools)
+	}
+}

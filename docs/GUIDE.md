@@ -2,6 +2,7 @@
 
 Everything `gg` can do, in one place. For the short version see the [README](../README.md).
 
+- [Install](#install)
 - [Commands](#commands)
 - [Filters](#filters)
 - [Periods](#periods)
@@ -13,12 +14,24 @@ Everything `gg` can do, in one place. For the short version see the [README](../
 - [Colour, plain output and small terminals](#colour-plain-output-and-small-terminals)
 - [Cancelling and the cache](#cancelling-and-the-cache)
 
+## Install
+
+The [README](../README.md) has the install commands. The installers (`scripts/install.sh`, `scripts/install.ps1`) read
+these variables:
+
+| Variable | Meaning |
+|---|---|
+| `GG_VERSION` | Install this release tag. Default: the latest release. |
+| `GG_INSTALL_DIR` | Where `gg` is written. Default: `~/.local/bin`, or `%LOCALAPPDATA%\gg\bin` on Windows. |
+| `GG_ALLOW_UNVERIFIED=1` | Install without `cosign`, checking only the checksum. Not recommended. |
+| `GG_RELEASE_BASE` | Download `gg_<os>_<arch>` (`.tar.gz` or `.zip`), `checksums.txt` and its `.pem`/`.sig` from this URL instead of GitHub. Meant for testing and mirrors; use an `https://` URL. The signature and checksum checks still apply to the files it serves, so a mirror must serve files from a release built by this repository's workflow. |
+
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `gg` | Opens the dashboard when stdout and stdin are terminals; prints the report otherwise (so `gg \| less` and scripts get text). |
-| `gg report` | The compact text report. Add `--compact`, `--daily`, `--notes`. |
+| `gg report` | The compact text report. Add `--compact`, `--daily`, `--notes`, `--what-if FILE`. |
 | `gg tui` | Forces the dashboard. |
 | `gg notes` | How far to trust the numbers: estimates, unpriced models, gaps, experimental data, sources, price dates. |
 | `gg export` | JSON or CSV to stdout. See [EXPORT.md](EXPORT.md). |
@@ -84,9 +97,43 @@ On the command line the equivalent is `--days`, `--from/--to` and `--all`.
 
 <p align="center"><img src="img/period.png" alt="The period picker" width="760"></p>
 
+## Compare two periods
+
+`gg compare A B` puts two periods side by side: the totals (tokens, estimated cost, sessions, API calls and cache
+share), then the providers and the models, each with its tokens and cost in A and in B.
+
+```
+gg compare 2026-09 2026-10
+gg compare 14d 2026-10-01..2026-10-15 --provider claude
+```
+
+Each period takes the same forms as the dashboard picker, one argument per period:
+
+| Period | Meaning |
+|---|---|
+| `14d` | the last 14 days, counting today |
+| `2026-10-29` | that day |
+| `2026-10` | that month |
+| `2026` | that year |
+| `2026-10-01..2026-10-15` | an inclusive range |
+| `all` | everything |
+
+- **Changes are B against A**: `(B - A) / A`. The A value is the base, shown in its own column. A row that exists only in
+  B shows `new`; a row with nothing in either period shows `—`.
+- **Cost** is compared only when both periods are fully priced. If either one has unpriced usage, its cost change is
+  `n/a` (the cost cells show `≥` for a partly priced side and `unpriced` for a side with none). See `gg notes`.
+- **Cache share** changes are in percentage points, not percent.
+- **Rows** are sorted by B, busiest first. Each table shows at most 25 rows.
+- **Filters** `--provider`, `--model` and `--project` apply to both periods. `--prices`, `--no-cache`, `--no-color`
+  and `--ascii` work as in the report. `--days`, `--from`, `--to`, `--all` and the report-only flags are refused:
+  the periods are the arguments.
+
+The output is text only; there is no JSON form. For machine-readable numbers, run `gg export --all --format json`
+for each period with the same filters and compare the files.
+
 ## The dashboard (TUI)
 
-`gg` opens a dashboard with seven views:
+`gg` opens a dashboard with nine views:
 
 | View | Key | What it shows |
 |---|---|---|
@@ -98,6 +145,7 @@ On the command line the equivalent is `--days`, `--from/--to` and `--all`.
 | Sessions | `6` | The heaviest sessions. |
 | Tools | `7` | Tools and skills the assistant called, from Claude Code transcripts (see below). |
 | Notes | `8` · `n` | Every caveat, plus sources and prices. A `⚠N` badge appears when something needs attention. |
+| Monthly | `9` | One row per calendar month of the period, newest first: tokens, estimated cost, sessions, and the cost change against the month before, with that month's cost as the base. `n/a` when either month has unpriced usage. |
 
 Providers keep one colour everywhere (Claude orange, Codex blue, Gemini purple…). **Yellow always means caution**
 (an estimate, an unpriced model, partial data). Each list has a **details panel** for the selected row: composition of
@@ -107,7 +155,7 @@ tokens, cost, cache hit share, first/last seen.
 
 | Key | Action |
 |---|---|
-| `←` `→` · `Tab` `Shift+Tab` · `h` `l` · `1`–`8` | switch view |
+| `←` `→` · `Tab` `Shift+Tab` · `h` `l` · `1`–`9` | switch view |
 | `↑` `↓` · `j` `k` · `PgUp` `PgDn` · `g` `G` | move / scroll |
 | `Enter` | **drill in**: filter everything to the selected day, provider, model (and its provider when the name is shared) or project. On Sessions, Enter says there is nothing finer. |
 | `Esc` · `Backspace` | undo the last drill-down → clear the search → back to Overview |
@@ -118,7 +166,8 @@ tokens, cost, cache hit share, first/last seen.
 | `m` | toggle [compact mode](#compact-mode) |
 | `e` | export the table you are on (Daily to Sessions) to a CSV file, `gg-<table>-<time>.csv`, in the folder you started `gg` from. Overview, Notes and Tools have no table: `e` writes nothing there. |
 | `c` | clear every filter, including the ones given on the command line |
-| `r` · `R` | rescan now (unchanged files are not re-read). `Esc` stops a rescan that runs in the background. |
+| `r` · `R` | rescan now (unchanged files are not re-read). The view stays while it runs; `Esc` stops it and keeps the last complete view. |
+| `y` | copy the selected table row to the clipboard, using the OSC 52 escape sequence. The status line says `copied` for three seconds. Terminals that do not support OSC 52 ignore it. |
 | `?` | help · `q` or `Ctrl-C` quit (`q` also quits from the help screen) |
 
 Active filters appear as chips at the right of the header, so you always know why the numbers are what they are.
@@ -129,7 +178,8 @@ stays visible on a narrow terminal too.
 as `mcp__docs__guide`), and lists skills under `skill:<name>`. Each call is attributed to the reply that made it, so the
 counts follow the same period and filters as everything else. The other tools are not read for tool calls yet.
 
-While the first scan runs, `q` quits and `Esc` cancels the scan (finished files stay cached).
+While the first scan runs, `q` quits and `Esc` cancels the scan (finished files stay cached). After 3 seconds and 5 % of
+the files, the loading box estimates the time left (`about N s left`), from the share done and the time taken.
 
 The dashboard is static after its initial scan by default. Start it with `gg --watch` (or `gg tui --watch`) to
 rescan in the background every minute; `GG_REFRESH=<seconds>` changes the interval, and `0` disables automatic
@@ -174,7 +224,8 @@ top provider claude 82%  ·  model claude-sonnet-5-5 56%  ·  project dev/websho
 ## The report
 
 `gg report` prints the same data without a UI: headline numbers, token mix, a daily trend, and the top providers,
-models and projects. `--daily` adds a per-day table; `--notes` appends the full [notes](#notes). Width follows your
+models and projects. `--daily` adds a per-day table; `--notes` appends the full [notes](#notes); `--what-if FILE` adds one
+line under the cost with the same range priced by another prices file (see [PRICING.md](PRICING.md#what-if-prices)). Width follows your
 terminal (`COLUMNS` if it is not a terminal) and never overflows. When stdout is a pipe the output is plain text.
 
 ## Notes

@@ -45,7 +45,8 @@ files of at most 64 MB, and changing one of them invalidates the cached result o
   needed to resume (for example Codex's current model and cumulative counters, or Pi's working directory). The directory
   is readable only by you (`0700`, files `0600`). It is derived data: `gg cache clear` removes the files `gg` wrote.
   Entries whose log has disappeared are removed on the next scan. Writes are atomic, through temporary `gg-*.tmp` files
-  in the same directory.
+  in the same directory. The warm start (the dashboard showing the previous version's numbers at once) reads its
+  data from this directory only.
 - **`tui.json`** in the config directory (`<config dir>/gauge-and-grain/`, or `GG_CONFIG_DIR`), written when the dashboard
   exits: the sort, view, period preset and compact mode. It holds no paths, no names and no usage figures. Delete it to
   forget them.
@@ -54,6 +55,11 @@ files of at most 64 MB, and changing one of them invalidates the cached result o
   `0644` before your umask, so other users on the machine may be able to read it.
 
 `gg` never modifies or deletes the logs it reads.
+
+The **installers** write only when you run them. `scripts/install.sh` and `scripts/install.ps1` download the archive and
+checksums into a temporary folder, which they delete when they finish, and copy the `gg` binary into the install
+directory (`~/.local/bin`, or `%LOCALAPPDATA%\gg\bin` on Windows; `GG_INSTALL_DIR` changes it). They do not change
+`PATH` or any shell profile: when the directory is not on `PATH`, they print the line to add, and you add it yourself.
 
 SQLite databases (OpenCode, Kilo CLI) are never written to, and `gg` creates no `-shm`, `-wal` or journal files beside
 them. A database with no write-ahead log is opened in immutable mode. When its `-wal` holds recent rows, the database and

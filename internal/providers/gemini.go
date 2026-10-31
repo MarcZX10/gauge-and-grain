@@ -34,7 +34,7 @@ type Gemini struct{}
 
 func (Gemini) ID() string         { return "gemini" }
 func (Gemini) Name() string       { return "Gemini CLI" }
-func (Gemini) ParserVersion() int { return 2 } // 2: key on session and message id, not path
+func (Gemini) ParserVersion() int { return 3 } // 3: cache read only when cached is present; 2: key on session and message id, not path
 func (Gemini) Experimental() string {
 	return "parser follows Gemini CLI's recording format as documented by third-party readers; not verified against real logs"
 }
@@ -185,7 +185,9 @@ func (p *geminiParser) add(m geminiMsg) {
 		CacheRead: cached,
 		Output:    clamp(val(t.Output), &p.st) + thoughts,
 		Reasoning: thoughts,
-		Has:       model.HasCacheRead,
+	}
+	if t.Cached != nil { // no field, no cache read: the share is n/a, not 0%
+		e.Has |= model.HasCacheRead
 	}
 	if t.Thoughts != nil {
 		e.Has |= model.HasReasoning
