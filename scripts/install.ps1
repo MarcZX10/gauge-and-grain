@@ -39,9 +39,21 @@ try {
       Invoke-WebRequest "$base/checksums.txt.pem" -OutFile "$tmp\checksums.txt.pem" -UseBasicParsing
       Invoke-WebRequest "$base/checksums.txt.sig" -OutFile "$tmp\checksums.txt.sig" -UseBasicParsing
     } catch { throw "this release has no signature (checksums.txt.pem/.sig); nothing installed" }
-    & $cosign.Source verify-blob --certificate "$tmp\checksums.txt.pem" --signature "$tmp\checksums.txt.sig" `
-      --certificate-identity-regexp "^https://github.com/$([regex]::Escape($repo))/\.github/workflows/release\.yml@refs/tags/v.+$" `
-      --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' "$tmp\checksums.txt" *> $null
+    # Windows PowerShell 5.1 turns cosign's stderr (it prints "Verified OK" there) into a
+    # terminating error under 'Stop', so relax the preference for this one call only.
+    # $LASTEXITCODE starts at 1, so anything but a clean cosign exit fails closed.
+    $savedPreference = $ErrorActionPreference
+    $LASTEXITCODE = 1
+    try {
+      $ErrorActionPreference = 'Continue'
+      & $cosign.Source verify-blob --certificate "$tmp\checksums.txt.pem" --signature "$tmp\checksums.txt.sig" `
+        --certificate-identity-regexp "^https://github.com/$([regex]::Escape($repo))/\.github/workflows/release\.yml@refs/tags/v.+$" `
+        --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' "$tmp\checksums.txt" 2>&1 | Out-Null
+    } catch {
+      $LASTEXITCODE = 1
+    } finally {
+      $ErrorActionPreference = $savedPreference
+    }
     if ($LASTEXITCODE -ne 0) { throw "the signature on checksums.txt does not match this repository's release workflow; nothing installed" }
     Write-Host "Signature verified (cosign, release workflow of $repo)."
   } else {
