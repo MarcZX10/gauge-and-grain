@@ -4,8 +4,11 @@ package tui
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -68,12 +71,13 @@ const (
 	tabSessions
 	tabTools
 	tabNotes
+	tabMonthly
 	numTabs
 )
 
-var tabNames = [numTabs]string{"Overview", "Daily", "Providers", "Models", "Projects", "Sessions", "Tools", "Notes"}
-var tabShort = [numTabs]string{"Ovw", "Day", "Prv", "Mdl", "Prj", "Ses", "Tls", "Nts"}
-var tabLabel = [numTabs]string{"", "Day", "Provider", "Model", "Project", "Session", "", ""}
+var tabNames = [numTabs]string{"Overview", "Daily", "Providers", "Models", "Projects", "Sessions", "Tools", "Notes", "Monthly"}
+var tabShort = [numTabs]string{"Ovw", "Day", "Prv", "Mdl", "Prj", "Ses", "Tls", "Nts", "Mon"}
+var tabLabel = [numTabs]string{"", "Day", "Provider", "Model", "Project", "Session", "", "", ""}
 
 type sortBy int
 
@@ -87,11 +91,14 @@ type model_ struct {
 	width  int
 	height int
 
-	loading   bool
-	started   time.Time
-	frame     int
-	cancel    context.CancelFunc
-	ch        chan tea.Msg
+	loading bool
+	started time.Time
+	frame   int
+	cancel  context.CancelFunc
+	ch      chan tea.Msg
+	// gone is closed when the scan that owns ch is replaced: nobody reads its
+	// final message then, so that message must not block the scan goroutine.
+	gone      chan struct{}
 	seq       int // numbers the scans; see scanMsg
 	prog      scan.Progress
 	res       *scan.Result
@@ -136,12 +143,20 @@ type model_ struct {
 	updated    time.Time
 	// freshQueued is set once the stale cache has been replaced by a full scan.
 	freshQueued bool
+	// copied is when y last copied a row; the status line says so for a few seconds.
+	copied time.Time
 }
 
 type progressMsg scan.Progress
 type doneMsg *scan.Result
 type tickMsg time.Time
 type refreshMsg struct{}
+
+// copiedMsg ends the "copied" status of the copy made at that time.
+type copiedMsg time.Time
+
+// copiedFor is how long the status line says "copied".
+const copiedFor = 3 * time.Second
 
 // scanMsg tags a message from a scan with its sequence number, so the
 // messages of a scan that was replaced are ignored.
@@ -255,11 +270,15 @@ func (m *model_) startScan(allowStale bool) tea.Cmd {
 	if m.cancel != nil {
 		m.cancel()
 	}
+	if m.gone != nil {
+		close(m.gone)
+	}
 	m.seq++
 	seq := m.seq
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := make(chan tea.Msg, 64)
-	m.ch, m.cancel = ch, cancel
+	gone := make(chan struct{})
+	m.ch, m.cancel, m.gone = ch, cancel, gone
 	go func() {
 		res := scan.Run(ctx, scan.Options{Providers: m.cfg.Providers, CacheDir: m.cfg.CacheDir, AllowStale: allowStale, Progress: func(p scan.Progress) {
 			select { // never block the scan on a slow UI
@@ -267,7 +286,12 @@ func (m *model_) startScan(allowStale bool) tea.Cmd {
 			default:
 			}
 		}})
-		ch <- doneMsg(res)
+		// Not ctx.Done(): a cancelled scan (Esc) still reports its partial
+		// result to the listener. Only a replaced scan has no listener.
+		select {
+		case ch <- doneMsg(res):
+		case <-gone:
+		}
 	}()
 	return listen(seq, ch)
 }
@@ -301,15 +325,29 @@ func (m *model_) recompute() {
 		f.Providers = []string{m.provList()[m.provIdx-1]}
 	}
 	m.sum = m.idx.Summarize(f)
-	if m.sort == byCost {
-		for _, gs := range [][]*agg.Group{m.sum.ByProvider, m.sum.ByModel, m.sum.ByProject, m.sum.BySession} {
-			sort.SliceStable(gs, func(i, j int) bool { return gs[i].Cost > gs[j].Cost })
-		}
-	}
+	m.sortGroups()
 	m.cx = &render.Ctx{Sum: m.sum, Detect: m.cfg.Detect, Files: m.res.Files, Stats: m.res.Stats,
 		Cached: m.res.Cached, Parsed: m.res.Parsed, Duplicate: m.res.Duplicate, Errors: len(m.res.Errors),
 		Cancelled: m.cancelled, Prices: m.cfg.Prices, RangeName: m.rangeNm, Filters: m.filterText()}
 	m.warn, _ = render.NoteCounts(m.cx)
+	m.ver++
+}
+
+// sortGroups orders the tables of the summary: by tokens, the order the
+// index gives, or by cost. It only reorders the groups already summed, so
+// the sort key "s" costs no pass over the events.
+func (m *model_) sortGroups() {
+	for _, gs := range [][]*agg.Group{m.sum.ByProvider, m.sum.ByModel, m.sum.ByProject, m.sum.BySession} {
+		sort.SliceStable(gs, func(i, j int) bool {
+			if a, b := gs[i].Tokens(), gs[j].Tokens(); a != b {
+				return a > b
+			}
+			return gs[i].Key < gs[j].Key
+		})
+		if m.sort == byCost {
+			sort.SliceStable(gs, func(i, j int) bool { return gs[i].Cost > gs[j].Cost })
+		}
+	}
 	m.ver++
 }
 
@@ -326,6 +364,10 @@ func (m *model_) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case progressMsg:
 		m.prog = scan.Progress(msg)
 		return m, listen(m.seq, m.ch)
+	case copiedMsg:
+		if time.Time(msg).Equal(m.copied) {
+			m.copied = time.Time{}
+		}
 	case tickMsg:
 		if m.loading {
 			m.frame++
@@ -343,6 +385,7 @@ func (m *model_) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshing = false
 			return m, nil
 		}
+		keep := m.idx != nil && sameEvents(m.res, (*scan.Result)(msg))
 		m.res = (*scan.Result)(msg)
 		m.events = m.res.Events
 		m.cancelled = m.res.Cancelled
@@ -350,7 +393,9 @@ func (m *model_) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshing = false
 		m.updated = time.Now()
 		m.scanTook = time.Since(m.started)
-		m.idx = agg.NewIndex(m.events, m.cfg.Prices, m.cfg.Loc)
+		if !keep {
+			m.idx = agg.NewIndex(m.events, m.cfg.Prices, m.cfg.Loc)
+		}
 		m.applyPeriod()
 		if m.res.Stale > 0 && !m.freshQueued && !m.res.Cancelled {
 			// The usage above is from the previous parser's cache. Read the
@@ -364,6 +409,14 @@ func (m *model_) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.key(msg)
 	}
 	return m, nil
+}
+
+// sameEvents reports whether next holds the events prev had: nothing was
+// parsed or served from an older parser, and the same files were seen. The
+// index built from prev then still applies, so it is not rebuilt.
+func sameEvents(prev, next *scan.Result) bool {
+	return prev != nil && next.Parsed == 0 && next.Stale == 0 &&
+		len(prev.Events) == len(next.Events) && maps.Equal(prev.Files, next.Files)
 }
 
 // ---- keys ----------------------------------------------------------------
@@ -432,7 +485,7 @@ func (m *model_) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.tab = (m.tab + 1) % numTabs
 	case "shift+tab", "left", "h":
 		m.tab = (m.tab + numTabs - 1) % numTabs
-	case "1", "2", "3", "4", "5", "6", "7", "8":
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 		m.tab = int(s[0] - '1')
 	case "o":
 		m.tab = tabOverview
@@ -478,10 +531,19 @@ func (m *model_) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.provIdx = (m.provIdx + 1) % (len(m.provList()) + 1)
 		m.resetView()
 		m.recompute()
+	case "y":
+		text := m.selectedRowText()
+		if text == "" {
+			m.note = "nothing to copy here: y copies the selected table row"
+			break
+		}
+		at := time.Now()
+		m.copied = at
+		return m, tea.Batch(copyText(text), tea.Tick(copiedFor, func(time.Time) tea.Msg { return copiedMsg(at) }))
 	case "s":
 		m.sort = 1 - m.sort
 		m.resetView()
-		m.recompute()
+		m.sortGroups() // the groups are already summed: only their order changes
 		if m.tab == tabDaily || m.tab == tabOverview {
 			m.note = "sorting applies to Providers, Models, Projects and Sessions"
 		}
@@ -496,6 +558,10 @@ func (m *model_) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.resetView()
 		m.applyPeriod()
 	case "r", "R":
+		if m.res != nil { // data on screen: rescan in the background, like the timer
+			m.refreshing = true
+			return m, m.startScan(false)
+		}
 		m.loading, m.cancelled, m.prog, m.started = true, false, scan.Progress{}, time.Now()
 		m.refreshing = false
 		return m, tea.Batch(m.startScan(false), tick())
@@ -1226,6 +1292,8 @@ func (m *model_) scrollLines() []string {
 		c.lines = m.notesLines()
 	case tabTools:
 		c.lines = m.toolsLines()
+	case tabMonthly:
+		c.lines = m.monthlyLines()
 	default:
 		c.lines = m.overviewLines()
 	}
@@ -1754,12 +1822,21 @@ func (m *model_) footer() []string {
 	}
 	type hint struct{ key, what string }
 	all := []hint{{"←→", "view"}, {"↑↓", "move"}, {"⏎", "drill"}, {"esc", "back"}, {"t", "period"}, {"[ ]", "shift"}, {"p", "provider"}, {"c", "clear"}, {"/", "search"}, {"s", "sort"}, {"m", "compact"}, {"e", "export"}, {"n", "notes"}, {"?", "help"}, {"q", "quit"}}
-	if !m.isTable() {
+	if !m.isTable() { // Enter drills nothing on the text views: r rescans in its place
 		all[1].what, all[2] = "scroll", hint{"r", "rescan"}
+	}
+	// Export writes tables only. In the picker and the help, r and e are
+	// typed or close the help, so they are not offered there.
+	var shown []hint
+	for _, h := range all {
+		if h.key == "e" && !m.isTable() || (h.key == "e" || h.key == "r") && (m.picker || m.help) {
+			continue
+		}
+		shown = append(shown, h)
 	}
 	var parts []string
 	used := 0
-	for i, h := range all {
+	for i, h := range shown {
 		key := t.Fold(h.key) // folded first: the ASCII key is wider
 		p := t.Bold(key) + " " + t.Dim(h.what)
 		need := render.Width(key) + 1 + len(h.what) + 3
@@ -1791,6 +1868,9 @@ func (m *model_) status() string {
 	} else if !m.updated.IsZero() {
 		s += " · updated " + m.updated.Format("15:04")
 	}
+	if !m.copied.IsZero() && time.Since(m.copied) < copiedFor {
+		s += " · copied"
+	}
 	if m.note != "" {
 		s += " · " + m.note
 	}
@@ -1808,7 +1888,7 @@ func (m *model_) status() string {
 func (m *model_) helpView() []string {
 	t, W := m.cfg.Theme, m.width
 	rows := [][2]string{
-		{"← → · Tab · 1-8 · o · n", "switch view (o Overview, n Notes)"},
+		{"← → · Tab · 1-9 · o · n", "switch view (o Overview, n Notes)"},
 		{"↑ ↓ · j k · PgUp PgDn · g G", "move, or scroll the Overview and Notes"},
 		{"Enter · click a selected row", "drill into the day, provider, model or project"},
 		{"Esc · Backspace", "undo the last drill-down, then the search, then go to Overview"},
@@ -1819,6 +1899,7 @@ func (m *model_) helpView() []string {
 		{"Enter · Esc · Backspace", "in search: apply, cancel, delete a letter"},
 		{"↑ ↓ · Enter · Esc", "in the period picker: choose, type a range, close"},
 		{"m · e", "compact summary · export this table to CSV (Daily to Sessions)"},
+		{"y", "copy the selected table row to the clipboard (OSC 52: terminals that lack it ignore it)"},
 		{"r · R", "rescan now (unchanged files come from the cache)"},
 		{"mouse", "wheel scrolls; click tabs, periods, rows and bars; pointing previews a day"},
 		{"Shift + drag", "select and copy text (the terminal needs it while the mouse is used)"},
@@ -1851,11 +1932,16 @@ func (m *model_) loadingView() string {
 	}
 	w := max(30, min(64, m.width-4))
 	bw := w - 12
+	elapsed := time.Since(m.started)
+	stats := fmt.Sprintf("%s of %s files · %s · %s", render.Num(p.Done), render.Num(p.Total), humanBytes(p.Bytes), elapsed.Round(100*time.Millisecond))
+	if eta, ok := scanETA(elapsed, frac); ok {
+		stats += fmt.Sprintf(" · about %d s left", int(eta.Round(time.Second)/time.Second))
+	}
 	lines := []string{
 		t.FG(render.CAccent, frames[m.frame%len(frames)]) + " Reading local usage files",
 		"",
 		t.ColBar(frac, bw, render.CAccent) + fmt.Sprintf(" %3.0f%%", frac*100),
-		t.Dim(fmt.Sprintf("%s of %s files · %s · %s", render.Num(p.Done), render.Num(p.Total), humanBytes(p.Bytes), time.Since(m.started).Round(100*time.Millisecond))),
+		t.Dim(stats),
 		"",
 		t.Dim("Nothing leaves your machine. The first scan of a big history"),
 		t.Dim("takes a while; later runs only read what changed."),
@@ -1876,6 +1962,16 @@ func (m *model_) loadingView() string {
 		out = append(out, t.Trunc(pad+l, m.width))
 	}
 	return strings.Join(out, "\n")
+}
+
+// scanETA estimates the time left of a scan from the share of its work done
+// and the time it has taken so far. It says nothing before 3 seconds and
+// before 5 % of the work: the first seconds of a scan say little about the rest.
+func scanETA(elapsed time.Duration, done float64) (time.Duration, bool) {
+	if elapsed < 3*time.Second || done < 0.05 || done >= 1 {
+		return 0, false
+	}
+	return time.Duration(float64(elapsed) * (1 - done) / done), true
 }
 
 func humanBytes(n int64) string {
@@ -1934,6 +2030,121 @@ func (m *model_) exportView() {
 		return
 	}
 	m.note = "exported " + by + " view to ./" + name
+}
+
+// selectedRowText is the text of the selected table row as it is drawn, with
+// no colour, or "" when no table row is selected.
+func (m *model_) selectedRowText() string {
+	gs := m.groups()
+	cur := m.cursor[m.tab]
+	if !m.isTable() || m.sum == nil || cur < 0 || cur >= len(gs) {
+		return ""
+	}
+	g := m.geometry()
+	off := m.offset[m.tab]
+	end := min(len(gs), off+g.vis)
+	if cur < off || cur >= end {
+		return ""
+	}
+	_, rows := render.TableRowsOpt(m.cfg.Theme, gs[off:end], m.sum.Total.Tokens(), g.tableW-4, tabLabel[m.tab], true, m.tab == tabDaily)
+	return strings.TrimSpace(render.Strip(rows[cur-off]))
+}
+
+// clipboardOut is where the clipboard sequence goes: the terminal itself.
+var clipboardOut io.Writer = os.Stdout
+
+// copyText puts text on the terminal's clipboard. Nothing is printed back,
+// so a terminal without OSC 52 simply shows nothing.
+func copyText(text string) tea.Cmd {
+	return func() tea.Msg {
+		io.WriteString(clipboardOut, osc52(text))
+		return nil
+	}
+}
+
+// osc52 is the escape sequence that sets the clipboard ("c") to text.
+func osc52(text string) string {
+	return "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(text)) + "\a"
+}
+
+// monthlyLines is the Monthly view: one row per calendar month of the period,
+// newest first, built from the day groups the dashboard already has.
+func (m *model_) monthlyLines() []string {
+	t, W := m.cfg.Theme, m.width
+	months := monthGroups(m.sum.ByDay)
+	if len(months) == 0 {
+		return []string{"", "  " + t.Dim("No usage in this period.")}
+	}
+	lines := []string{t.Dim("  " + t.Pad("Month", 9) + t.PadL("Tokens", 9) + "  " + t.PadL("Est. cost", 11) + "  " + t.PadL("Sessions", 8) + "  vs previous month")}
+	for i := len(months) - 1; i >= 0; i-- {
+		var prev *agg.Group
+		if i > 0 {
+			prev = months[i-1]
+		}
+		g := months[i]
+		lines = append(lines, "  "+t.Pad(g.Label, 9)+t.PadL(render.Tokens(g.Tokens()), 9)+"  "+t.PadL(costText(t, g), 11)+"  "+
+			t.PadL(render.Num(len(g.Sessions)), 8)+"  "+monthChange(t, g, prev))
+	}
+	lines = append(lines, "", t.Dim("  Cost is an API-equivalent estimate. The change compares it with the month before"),
+		t.Dim("  and shows that month's cost; n/a when either month has unpriced usage."))
+	return append([]string{""}, t.Panel(fmt.Sprintf("Monthly · %d months", len(months)), lines, W, render.CAccent)...)
+}
+
+// monthGroups adds the day groups up by calendar month, oldest month first.
+// Days with no usage add nothing but keep their month in the list.
+func monthGroups(days []*agg.Group) []*agg.Group {
+	var out []*agg.Group
+	for _, d := range days {
+		if len(d.Key) < 7 {
+			continue
+		}
+		key := d.Key[:7]
+		if len(out) == 0 || out[len(out)-1].Key != key {
+			out = append(out, &agg.Group{Key: key, Label: key, Sessions: map[string]struct{}{}, Models: map[string]struct{}{},
+				Providers: map[string]struct{}{}, Unpriced: map[string]int64{}})
+		}
+		g := out[len(out)-1]
+		g.Events += d.Events
+		g.Input += d.Input
+		g.CacheRead += d.CacheRead
+		g.CacheWrite += d.CacheWrite
+		g.Output += d.Output
+		g.Reasoning += d.Reasoning
+		g.Cost += d.Cost
+		g.PricedTok += d.PricedTok
+		g.UnpricedTok += d.UnpricedTok
+		g.Has |= d.Has
+		for k := range d.Sessions {
+			g.Sessions[k] = struct{}{}
+		}
+		for k := range d.Models {
+			g.Models[k] = struct{}{}
+		}
+		for k := range d.Providers {
+			g.Providers[k] = struct{}{}
+		}
+		for k, v := range d.Unpriced {
+			g.Unpriced[k] += v
+		}
+	}
+	return out
+}
+
+// monthChange is the estimated cost of a month against the month before it,
+// with that month's cost as the base. It is n/a when either month has unpriced
+// usage, or the month before has no cost to compare with.
+func monthChange(t render.Theme, cur, prev *agg.Group) string {
+	switch {
+	case prev == nil:
+		return t.Dim("— first month")
+	case !cur.Complete() || !prev.Complete():
+		return t.Dim("n/a")
+	}
+	ch, ok := agg.Change(cur.Cost, prev.Cost)
+	if !ok {
+		return t.Dim("n/a")
+	}
+	return t.Arrow(ch) + t.Dim(" vs "+render.Cost(prev.Cost))
 }
 
 // heatWeeks is how many week columns the activity calendar draws in width w.

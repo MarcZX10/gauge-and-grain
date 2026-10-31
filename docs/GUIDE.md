@@ -99,7 +99,7 @@ On the command line the equivalent is `--days`, `--from/--to` and `--all`.
 
 ## The dashboard (TUI)
 
-`gg` opens a dashboard with seven views:
+`gg` opens a dashboard with nine views:
 
 | View | Key | What it shows |
 |---|---|---|
@@ -111,6 +111,7 @@ On the command line the equivalent is `--days`, `--from/--to` and `--all`.
 | Sessions | `6` | The heaviest sessions. |
 | Tools | `7` | Tools and skills the assistant called, from Claude Code transcripts (see below). |
 | Notes | `8` · `n` | Every caveat, plus sources and prices. A `⚠N` badge appears when something needs attention. |
+| Monthly | `9` | One row per calendar month of the period, newest first: tokens, estimated cost, sessions, and the cost change against the month before, with that month's cost as the base. `n/a` when either month has unpriced usage. |
 
 Providers keep one colour everywhere (Claude orange, Codex blue, Gemini purple…). **Yellow always means caution**
 (an estimate, an unpriced model, partial data). Each list has a **details panel** for the selected row: composition of
@@ -120,7 +121,7 @@ tokens, cost, cache hit share, first/last seen.
 
 | Key | Action |
 |---|---|
-| `←` `→` · `Tab` `Shift+Tab` · `h` `l` · `1`–`8` | switch view |
+| `←` `→` · `Tab` `Shift+Tab` · `h` `l` · `1`–`9` | switch view |
 | `↑` `↓` · `j` `k` · `PgUp` `PgDn` · `g` `G` | move / scroll |
 | `Enter` | **drill in**: filter everything to the selected day, provider, model (and its provider when the name is shared) or project. On Sessions, Enter says there is nothing finer. |
 | `Esc` · `Backspace` | undo the last drill-down → clear the search → back to Overview |
@@ -131,7 +132,8 @@ tokens, cost, cache hit share, first/last seen.
 | `m` | toggle [compact mode](#compact-mode) |
 | `e` | export the table you are on (Daily to Sessions) to a CSV file, `gg-<table>-<time>.csv`, in the folder you started `gg` from. Overview, Notes and Tools have no table: `e` writes nothing there. |
 | `c` | clear every filter, including the ones given on the command line |
-| `r` · `R` | rescan now (unchanged files are not re-read). `Esc` stops a rescan that runs in the background. |
+| `r` · `R` | rescan now (unchanged files are not re-read). The view stays while it runs; `Esc` stops it and keeps the last complete view. |
+| `y` | copy the selected table row to the clipboard, using the OSC 52 escape sequence. The status line says `copied` for three seconds. Terminals that do not support OSC 52 ignore it. |
 | `?` | help · `q` or `Ctrl-C` quit (`q` also quits from the help screen) |
 
 Active filters appear as chips at the right of the header, so you always know why the numbers are what they are.
@@ -142,7 +144,8 @@ stays visible on a narrow terminal too.
 as `mcp__docs__guide`), and lists skills under `skill:<name>`. Each call is attributed to the reply that made it, so the
 counts follow the same period and filters as everything else. The other tools are not read for tool calls yet.
 
-While the first scan runs, `q` quits and `Esc` cancels the scan (finished files stay cached).
+While the first scan runs, `q` quits and `Esc` cancels the scan (finished files stay cached). After 3 seconds and 5 % of
+the files, the loading box estimates the time left (`about N s left`), from the share done and the time taken.
 
 The dashboard is static after its initial scan by default. Start it with `gg --watch` (or `gg tui --watch`) to
 rescan in the background every minute; `GG_REFRESH=<seconds>` changes the interval, and `0` disables automatic
