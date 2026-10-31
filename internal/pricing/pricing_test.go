@@ -53,10 +53,10 @@ func TestLookupExactPrefixAndUnknown(t *testing.T) {
 
 func TestCostUsesCacheMultipliers(t *testing.T) {
 	tb, _ := Load("")
-	p := tb.Lookup("claude-sonnet-5-5") // $2 in, $10 out, $0.20 cache read
+	p := tb.Lookup("claude-sonnet-5-5") // $2 in, $10 out, $0.10 cache read (0.05x, as Anthropic lists it)
 	e := &model.Event{Input: 1_000_000, CacheRead: 1_000_000, CacheWrite: 1_000_000, CacheWrite1h: 400_000, Output: 1_000_000}
-	// 2 + 0.2 + 600k*2.5/1M + 400k*4/1M + 10
-	want := 2 + 0.2 + 1.5 + 1.6 + 10
+	// 2 + 0.1 + 600k*2.5/1M + 400k*4/1M + 10
+	want := 2 + 0.1 + 1.5 + 1.6 + 10
 	if got := p.Cost(e); math.Abs(got-want) > 1e-9 {
 		t.Errorf("cost=%v want %v", got, want)
 	}
