@@ -613,6 +613,66 @@ func TestCopyRowSendsOSC52AndSaysCopied(t *testing.T) {
 	}
 }
 
+// Day groups add up by calendar month, and the month's change is against the
+// month before, with its cost as the base; unpriced usage makes it n/a.
+func TestMonthlyGroupingAndChange(t *testing.T) {
+	day := func(key string, input int64, cost float64, unpriced int64, sessions ...string) *agg.Group {
+		g := &agg.Group{Key: key, Label: key, Input: input, Cost: cost, PricedTok: input - unpriced, UnpricedTok: unpriced,
+			Sessions: map[string]struct{}{}, Models: map[string]struct{}{}, Providers: map[string]struct{}{}, Unpriced: map[string]int64{}}
+		for _, s := range sessions {
+			g.Sessions[s] = struct{}{}
+		}
+		return g
+	}
+	months := monthGroups([]*agg.Group{
+		day("2026-08-31", 100, 1, 0, "a"),
+		day("2026-09-01", 200, 2, 0, "a", "b"),
+		day("2026-09-30", 100, 1, 0, "b"),
+		day("2026-10-01", 300, 4.5, 0, "c"),
+		day("2026-11-01", 50, 1, 50, "d"),
+	})
+	if len(months) != 4 {
+		t.Fatalf("four calendar months, got %d", len(months))
+	}
+	sep := months[1]
+	if sep.Key != "2026-09" || sep.Tokens() != 300 || sep.Cost != 3 || len(sep.Sessions) != 2 {
+		t.Errorf("September: key=%s tokens=%d cost=%v sessions=%d", sep.Key, sep.Tokens(), sep.Cost, len(sep.Sessions))
+	}
+	th := render.Theme{ASCII: true}
+	if got := render.Strip(monthChange(th, months[0], nil)); !strings.Contains(got, "first month") {
+		t.Errorf("the first month has no base: %q", got)
+	}
+	if got := render.Strip(monthChange(th, sep, months[0])); !strings.Contains(got, "^ 200%") || !strings.Contains(got, "vs $1.00") {
+		t.Errorf("September against August: %q", got)
+	}
+	if got := render.Strip(monthChange(th, months[2], sep)); !strings.Contains(got, "^ 50%") || !strings.Contains(got, "vs $3.00") {
+		t.Errorf("October against September: %q", got)
+	}
+	if got := render.Strip(monthChange(th, months[3], months[2])); !strings.Contains(got, "n/a") {
+		t.Errorf("an incomplete month gives n/a: %q", got)
+	}
+	if got := render.Strip(monthChange(th, months[2], months[3])); !strings.Contains(got, "n/a") {
+		t.Errorf("a change against an incomplete month gives n/a: %q", got)
+	}
+}
+
+// The Monthly tab is the ninth: it lists the months of the period, newest first.
+func TestMonthlyTabListsTheMonths(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	press(m, "9")
+	if m.tab != tabMonthly {
+		t.Fatalf("9 must open the Monthly tab: tab=%d", m.tab)
+	}
+	v := render.Strip(m.View())
+	if i, j := strings.Index(v, "2026-10"), strings.Index(v, "2026-09"); i < 0 || j < 0 || i > j {
+		t.Errorf("the Monthly tab must list October and September, newest first:\n%s", v)
+	}
+	if strings.Contains(render.Strip(strings.Join(m.footer(), "\n")), "export") {
+		t.Error("Monthly is a text view: export must not be offered")
+	}
+}
+
 // A cancelled first scan with stale files starts no full rescan.
 func TestCancelledFirstScanStartsNoFollowUp(t *testing.T) {
 	m := fixtureModel(t, render.Theme{ASCII: true})
