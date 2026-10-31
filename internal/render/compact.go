@@ -25,7 +25,7 @@ func Compact(t Theme, c *Ctx, width int) []string {
 	tok := t.FG(CAccent, t.Bold(Tokens(tot.Tokens()))) + t.Dim(" tokens")
 	if s.Prev != nil {
 		if ch, ok := agg.Change(float64(tot.Tokens()), float64(s.Prev.Tokens())); ok {
-			tok += " " + t.Arrow(ch)
+			tok += " " + t.Arrow(ch) + t.Dim(" vs prev")
 		}
 	}
 	var cost string
@@ -38,7 +38,7 @@ func Compact(t Theme, c *Ctx, width int) []string {
 		cost = t.FG(CGood, t.Bold(Cost(tot.Cost))) + t.Dim(" est.")
 		if s.Prev != nil {
 			if ch, ok := agg.Change(tot.Cost, s.Prev.Cost); ok && s.Prev.Complete() {
-				cost += " " + t.Arrow(ch)
+				cost += " " + t.Arrow(ch) + t.Dim(" vs prev")
 			} else if !s.Prev.Complete() {
 				cost += " " + t.Dim("vs prev n/a")
 			}
@@ -46,7 +46,11 @@ func Compact(t Theme, c *Ctx, width int) []string {
 	}
 	parts := []string{tok, cost, t.Bold(Num(len(tot.Sessions))) + t.Dim(" sessions")}
 	if sh, ok := tot.CacheShare(); ok && tot.Has&model.HasCacheRead != 0 {
-		parts = append(parts, t.Bold(Pct(sh))+t.Dim(" cached"))
+		cache := t.Dim("cached ") + t.Bold(Pct(sh)) + t.Dim(" of input")
+		if cov, ok := tot.CacheCoverage(); ok && cov < 1 {
+			cache += t.Dim(fmt.Sprintf(" (from %s that reports caches)", coverPct(cov)))
+		}
+		parts = append(parts, cache)
 	}
 	out := []string{strings.Join(parts, sep)}
 
@@ -70,16 +74,21 @@ func Compact(t Theme, c *Ctx, width int) []string {
 
 	// 3. the trend, in one line
 	if len(s.ByDay) > 1 && width >= 40 {
-		vals := make([]float64, len(s.ByDay))
-		peak := s.ByDay[0]
-		for i, d := range s.ByDay {
-			vals[i] = float64(d.Tokens())
-			if d.Tokens() > peak.Tokens() {
-				peak = d
-			}
+		n := clampInt(width-34, 8, 48)
+		if len(s.ByDay) > n { // leave room for the bucket note
+			n = clampInt(width-52, 8, 48)
 		}
-		spark := t.Spark(Bucket(vals, clampInt(width-34, 8, 48)))
-		out = append(out, t.FG(CAccent, spark)+t.Dim("  peak "+peak.Key[5:10]+" "+Tokens(peak.Tokens())))
+		bars, size := DayBuckets(s.ByDay, n)
+		pk := peakBucket(bars)
+		peakKey := s.ByDay[pk*size].Key[5:10]
+		if size > 1 {
+			peakKey += ".." + s.ByDay[min(len(s.ByDay), (pk+1)*size)-1].Key[5:10]
+		}
+		line := t.FG(CAccent, t.Spark(bars))
+		if note := bucketNote(size); note != "" {
+			line += t.Dim("  " + note)
+		}
+		out = append(out, line+t.Dim("  peak "+peakKey+" "+Tokens(int64(bars[pk]))))
 	}
 
 	// 4. only if something needs attention

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/MarcZX10/gauge-and-grain/internal/agg"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -98,6 +99,15 @@ func (t Theme) Trunc(s string, w int) string {
 	if t.ASCII {
 		ell = "~"
 	}
+	// A model id that ends in a snapshot date keeps the date: two snapshots
+	// of one model differ only there, so cutting the end would make them look
+	// the same. The ellipsis goes in the middle.
+	if loc := snapshotDate.FindStringIndex(s); loc != nil && loc[0] > 0 && !strings.Contains(s, "\x1b") {
+		tail := s[loc[0]:]
+		if room := w - Width(tail) - Width(ell); room >= 1 {
+			return prefixWidth(s[:loc[0]], room) + ell + tail
+		}
+	}
 	budget := w - 1
 	var b strings.Builder
 	used, open := 0, false
@@ -128,6 +138,21 @@ func (t Theme) Trunc(s string, w int) string {
 		b.WriteString("\x1b[0m")
 	}
 	return b.String() + ell
+}
+
+// snapshotDate matches the date suffix of a model snapshot id (as pricing does).
+var snapshotDate = regexp.MustCompile(`[-@]\d{8}$|-\d{4}-\d{2}-\d{2}$`)
+
+// prefixWidth is the longest prefix of s that fits in w display columns.
+func prefixWidth(s string, w int) string {
+	used := 0
+	for i, r := range s {
+		used += runewidth.RuneWidth(r)
+		if used > w {
+			return s[:i]
+		}
+	}
+	return s
 }
 
 // Tokens formats a token count compactly: 950, 12.3K, 4.56M, 1.20B.
@@ -270,6 +295,45 @@ func (t Theme) Arrow(change float64) string {
 	default:
 		return t.Down(fmt.Sprintf("%s %s", down, Pct(a)))
 	}
+}
+
+// DayBuckets sums consecutive days into at most n buckets of equal length, so
+// a long window is drawn as weekly or longer bars instead of being cut. It
+// returns the total of each bucket and the number of days in a bucket (1 when
+// the days fit without grouping). The last bucket may hold fewer days.
+func DayBuckets(days []*agg.Group, n int) ([]float64, int) {
+	size := 1
+	if n > 0 && len(days) > n {
+		size = (len(days) + n - 1) / n
+	}
+	vals := make([]float64, (len(days)+size-1)/size)
+	for i, d := range days {
+		vals[i/size] += float64(d.Tokens())
+	}
+	return vals, size
+}
+
+// bucketNote names the bucket length for a chart line, or "" for single days.
+func bucketNote(size int) string {
+	switch size {
+	case 1:
+		return ""
+	case 7:
+		return "weekly buckets"
+	default:
+		return fmt.Sprintf("%d-day buckets", size)
+	}
+}
+
+// peakBucket returns the index of the largest value (the first on a tie).
+func peakBucket(vals []float64) int {
+	best := 0
+	for i, v := range vals {
+		if v > vals[best] {
+			best = i
+		}
+	}
+	return best
 }
 
 // Bucket downsamples vals to at most n points by summing neighbours.

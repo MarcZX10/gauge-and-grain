@@ -133,23 +133,38 @@ type Group struct {
 	UnpricedTok int64
 	Has         uint8  // OR of per-event field flags
 	HasCount    [3]int // events that reported cache read / cache write / reasoning
-	First, Last time.Time
-	Sessions    map[string]struct{}
-	Models      map[string]struct{}
-	Providers   map[string]struct{}
-	Unpriced    map[string]int64 // unpriced model -> tokens
+	// ShareRead and ShareIn are the cache reads and the input-side tokens of
+	// the events that report cache reads: the basis of the cache hit share.
+	ShareRead, ShareIn int64
+	First, Last        time.Time
+	Sessions           map[string]struct{}
+	Models             map[string]struct{}
+	Providers          map[string]struct{}
+	Unpriced           map[string]int64 // unpriced model -> tokens
 }
 
 // Tokens is the provider-neutral total.
 func (g *Group) Tokens() int64 { return g.Input + g.CacheRead + g.CacheWrite + g.Output }
 
-// CacheShare is cache-read tokens as a share of all input-side tokens.
+// CacheShare is cache-read tokens as a share of the input-side tokens of the
+// events that report cache reads. Providers that do not report caches are
+// left out of both sides, so they cannot drag the share down; CacheCoverage
+// says how much of the input that is.
 func (g *Group) CacheShare() (float64, bool) {
+	if g.ShareIn == 0 {
+		return 0, false
+	}
+	return float64(g.ShareRead) / float64(g.ShareIn), true
+}
+
+// CacheCoverage is the fraction of all input-side tokens that comes from
+// events reporting cache reads (the part CacheShare is computed over).
+func (g *Group) CacheCoverage() (float64, bool) {
 	in := g.Input + g.CacheRead + g.CacheWrite
 	if in == 0 {
 		return 0, false
 	}
-	return float64(g.CacheRead) / float64(in), true
+	return float64(g.ShareIn) / float64(in), true
 }
 
 // CostKnown is false when nothing in the group could be priced.
@@ -174,6 +189,8 @@ func (g *Group) addCell(c *cell) {
 	for i := range g.HasCount {
 		g.HasCount[i] += c.hasCount[i]
 	}
+	g.ShareRead += c.shareRead
+	g.ShareIn += c.shareIn
 	if g.First.IsZero() || c.first.Before(g.First) {
 		g.First = c.first
 	}
@@ -221,6 +238,7 @@ type cell struct {
 	priced                            bool
 	has                               uint8
 	hasCount                          [3]int
+	shareRead, shareIn                int64 // see Group.ShareRead
 	events                            int
 	first, last                       time.Time
 	tools                             map[string]int64 // tool name -> uses, nil when none
@@ -304,6 +322,10 @@ func NewIndex(events []model.Event, pt *pricing.Table, loc *time.Location) *Inde
 		c.output += e.Output
 		c.reasoning += e.Reasoning
 		c.has |= e.Has
+		if e.Has&model.HasCacheRead != 0 {
+			c.shareRead += e.CacheRead
+			c.shareIn += e.Input + e.CacheRead + e.CacheWrite
+		}
 		for j, bit := range [3]uint8{model.HasCacheRead, model.HasCacheWrite, model.HasReasoning} {
 			if e.Has&bit != 0 {
 				c.hasCount[j]++
@@ -479,6 +501,7 @@ func (x *Index) Summarize(f Filter) *Summary {
 	s.ByDay = fillDays(day, f, loc, time.Now())
 	s.ByProvider, s.ByModel, s.ByProject, s.BySession = sorted(prov), sorted(mod), sorted(proj), sorted(sess)
 	shortenSessions(s.BySession)
+	shortenProjects(s.ByProject)
 	disambiguate(s.ByModel)
 	for _, g := range s.BySession {
 		for p := range g.Providers {
@@ -569,17 +592,45 @@ func civilDay(t time.Time, loc *time.Location) time.Time {
 }
 
 // ProjectLabel shortens a working directory to its last two path elements.
-func ProjectLabel(p string) string {
+func ProjectLabel(p string) string { return projectLabel(p, 2) }
+
+// projectLabel keeps the last n path elements of a working directory.
+func projectLabel(p string, n int) string {
 	if p == "" {
 		return "(unknown)"
 	}
-	p = filepath.ToSlash(p)
-	p = strings.TrimRight(p, "/")
+	p = strings.Trim(filepath.ToSlash(p), "/")
 	parts := strings.Split(p, "/")
-	if len(parts) <= 2 {
+	if len(parts) <= n {
 		return p
 	}
-	return strings.Join(parts[len(parts)-2:], "/")
+	return strings.Join(parts[len(parts)-n:], "/")
+}
+
+// shortenProjects lengthens the project labels until they are unique within
+// the summary: "/a/x/app" and "/b/x/app" both read "x/app" by default, so
+// each shows as many elements as it takes to tell them apart.
+func shortenProjects(gs []*Group) {
+	maxParts := 0
+	for _, g := range gs {
+		maxParts = max(maxParts, strings.Count(strings.Trim(filepath.ToSlash(g.Key), "/"), "/")+1)
+	}
+	for n := 2; ; n++ {
+		labels := make([]string, len(gs))
+		seen := map[string]bool{}
+		unique := true
+		for i, g := range gs {
+			labels[i] = projectLabel(g.Key, n)
+			unique = unique && !seen[labels[i]]
+			seen[labels[i]] = true
+		}
+		if unique || n >= maxParts {
+			for i, g := range gs {
+				g.Label = labels[i]
+			}
+			return
+		}
+	}
 }
 
 // shortIDLen is how much of a session id is shown by default.

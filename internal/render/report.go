@@ -2,6 +2,7 @@ package render
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -171,12 +172,32 @@ func TokenMix(t Theme, c *Ctx, width int) []string {
 	line("cache write", g.CacheWrite, reported(model.HasCacheWrite), "stored into cache; priced above input")
 	line("output", g.Output, true, "generated tokens")
 	if reported(model.HasReasoning) {
-		out = append(out, "  "+t.Dim(t.Pad("  of which thinking", 20))+t.Dim(t.PadL(Tokens(g.Reasoning), 9))+"  "+t.Dim("reasoning tokens: a subset of output, not added again"))
+		out = append(out, "  "+t.Dim(t.Pad("  of which reasoning", 20))+t.Dim(t.PadL(Tokens(g.Reasoning), 9))+"  "+t.Dim("reasoning tokens: a subset of output, not added again"))
 	}
 	if sh, ok := g.CacheShare(); ok && reported(model.HasCacheRead) {
-		out = append(out, "  "+t.Dim(fmt.Sprintf("cache hit share of input-side tokens: %s", Pct(sh))))
+		out = append(out, "  "+t.Dim(cacheShareText(g, sh)))
 	}
 	return out
+}
+
+// cacheShareText states a cache hit share with its base. When some input
+// comes from sources that report no caches, the share covers only the rest,
+// and the text says how much of the input that is.
+func cacheShareText(g *agg.Group, share float64) string {
+	s := fmt.Sprintf("cache hit share: %s of input-side tokens", Pct(share))
+	if cov, ok := g.CacheCoverage(); ok && cov < 1 {
+		s += fmt.Sprintf(" (from %s of input that reports caches)", coverPct(cov))
+	}
+	return s
+}
+
+// coverPct is a fraction just below 1 shown rounded down, so 99.8% does not
+// read as "from 100%" when some input is missing.
+func coverPct(f float64) string {
+	if f > 0.99 && f < 1 {
+		return fmt.Sprintf("%.1f%%", math.Floor(f*1000)/10)
+	}
+	return Pct(f)
 }
 
 // TableRows renders a ranked table: one header line and one line per group.
@@ -311,24 +332,30 @@ func Daily(t Theme, c *Ctx, width int) []string {
 		return append(out, t.Dim("  no usage in this range"))
 	}
 	vals := make([]float64, len(days))
-	peak := days[0]
+	var active int
 	for i, d := range days {
 		vals[i] = float64(d.Tokens())
-		if d.Tokens() > peak.Tokens() {
-			peak = d
-		}
-	}
-	sw := clampInt(width-4, 10, 90)
-	out = append(out, "  "+t.Head(t.Spark(Bucket(vals, sw))))
-	out = append(out, "  "+t.Dim(fmt.Sprintf("%s %s %s", days[0].Key, strings.Repeat("─", clampInt(width-30, 4, 40)), days[len(days)-1].Key)))
-	var active int
-	for _, d := range days {
 		if d.Tokens() > 0 {
 			active++
 		}
 	}
+	// a long window is drawn in buckets of several days; the peak then
+	// refers to the bucket, and the chart line says how long a bucket is
+	bars, size := DayBuckets(days, clampInt(width-4, 10, 90))
+	pk := peakBucket(bars)
+	first, last := days[pk*size].Key, days[min(len(days), (pk+1)*size)-1].Key
+	peakKey := first
+	if size > 1 {
+		peakKey = first + ".." + last
+	}
+	out = append(out, "  "+t.Head(t.Spark(bars)))
+	axis := fmt.Sprintf("%s %s %s", days[0].Key, strings.Repeat("─", clampInt(width-30, 4, 40)), days[len(days)-1].Key)
+	if note := bucketNote(size); note != "" {
+		axis += "  ·  " + note
+	}
+	out = append(out, "  "+t.Dim(axis))
 	out = append(out, "  "+t.Dim(fmt.Sprintf("peak %s (%s)  ·  %d of %d days active  ·  avg %s/active day",
-		peak.Key, Tokens(peak.Tokens()), active, len(days), Tokens(c.Sum.Total.Tokens()/int64(max(active, 1))))))
+		peakKey, Tokens(int64(bars[pk])), active, len(days), Tokens(c.Sum.Total.Tokens()/int64(max(active, 1))))))
 	if len(days) >= 7 && active >= 7 {
 		h := len(days) / 2
 		var a, b float64

@@ -28,7 +28,6 @@ type Price struct {
 	CacheRead    *float64 `json:"cache_read,omitempty"`
 	CacheWrite5m *float64 `json:"cache_write_5m,omitempty"`
 	CacheWrite1h *float64 `json:"cache_write_1h,omitempty"`
-	Derived      []string `json:"derived,omitempty"`
 	Note         string   `json:"note,omitempty"`
 	Aliases      []string `json:"aliases,omitempty"` // other ids priced at this row, matched exactly
 	User         bool     `json:"-"`                 // came from the user's override file

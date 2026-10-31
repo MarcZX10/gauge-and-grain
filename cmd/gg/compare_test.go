@@ -43,8 +43,9 @@ func TestCompareChangeArithmetic(t *testing.T) {
 	if got := changeText(th, 100, 150, false); got != "n/a" {
 		t.Errorf("unknown token change = %q, want n/a", got)
 	}
-	a := &agg.Group{Input: 100, CacheRead: 100} // 50% cache share
-	b := &agg.Group{Input: 100, CacheRead: 300} // 75% cache share
+	// CacheShare is computed over the events that report caches (ShareIn, ShareRead)
+	a := &agg.Group{ShareIn: 200, ShareRead: 100} // 50% cache share
+	b := &agg.Group{ShareIn: 400, ShareRead: 300} // 75% cache share
 	if got := shareChange(a, b); got != "+25.0 pts" {
 		t.Errorf("cache share change = %q, want +25.0 pts", got)
 	}

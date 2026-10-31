@@ -273,3 +273,21 @@ func TestNotesAreExposedOnPrices(t *testing.T) {
 		t.Errorf("gemini pro note missing: %+v", p)
 	}
 }
+
+// A row with no cache_read price (the "derived" rows of the table) prices
+// cache reads at 0.1x input, and the table has no separate derived marker to
+// fall out of step with that.
+func TestRowWithoutCacheReadPriceDerivesTenthOfInput(t *testing.T) {
+	pt, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := pt.Lookup("claude-sonnet-4-6")
+	if p == nil || p.CacheRead != nil {
+		t.Fatalf("want an embedded row without cache_read, got %+v", p)
+	}
+	e := model.Event{Model: "claude-sonnet-4-6", CacheRead: 1_000_000}
+	if got := p.Cost(&e); math.Abs(got-0.3) > 1e-9 { // 0.1 x $3.00 per 1M
+		t.Errorf("cache read cost = %v, want 0.3", got)
+	}
+}

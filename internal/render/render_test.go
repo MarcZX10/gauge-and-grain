@@ -431,3 +431,199 @@ func TestDotMarksProvidersWithoutColour(t *testing.T) {
 		t.Errorf("ASCII dot = %q, want *", got)
 	}
 }
+
+// Mixed providers: the cache hit share is taken over the events that report
+// caches, and the note says how much of the input that covers.
+func TestCacheShareNoteNamesItsBase(t *testing.T) {
+	pt, _ := pricing.Load("")
+	d := func(day int) time.Time { return time.Date(2026, 10, day, 12, 0, 0, 0, time.UTC) }
+	evs := []model.Event{
+		{Provider: "claude", Model: "claude-sonnet-5-5", Session: "a", Project: "/w/a", Time: d(1), Input: 100, CacheRead: 900, Output: 10, Has: model.HasCacheRead},
+		{Provider: "codex", Model: "gpt-5.4", Session: "b", Project: "/w/b", Time: d(1), Input: 1000, Output: 10}, // no cache fields
+	}
+	c := &Ctx{Sum: agg.Summarize(evs, agg.Filter{}, pt, time.UTC), Prices: pt}
+	lines := strings.Join(TokenMix(Theme{ASCII: true}, c, 100), "\n")
+	// 900 of the 1000 input-side tokens of the reporting event; the other
+	// provider is half the input and is named, not counted as a zero
+	want := "cache hit share: 90% of input-side tokens (from 50% of input that reports caches)"
+	if !strings.Contains(lines, want) {
+		t.Errorf("want %q in:\n%s", want, lines)
+	}
+	if compact := strings.Join(Compact(Theme{ASCII: true}, c, 100), " "); !strings.Contains(compact, "cached 90% of input (from 50% that reports caches)") {
+		t.Errorf("compact must say the same base:\n%s", compact)
+	}
+}
+
+// When every input token comes from reporting sources the note is not
+// needed, and the share is the plain share.
+func TestCacheShareHasNoNoteWhenAllInputIsCovered(t *testing.T) {
+	pt, _ := pricing.Load("")
+	evs := []model.Event{{Provider: "claude", Model: "claude-sonnet-5-5", Time: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC),
+		Input: 100, CacheRead: 900, Has: model.HasCacheRead}}
+	c := &Ctx{Sum: agg.Summarize(evs, agg.Filter{}, pt, time.UTC), Prices: pt}
+	text := strings.Join(strings.Fields(strings.Join(Compact(Theme{ASCII: true}, c, 100), " ")), " ")
+	if !strings.Contains(text, "cached 90% of input") || strings.Contains(text, "reports caches") {
+		t.Errorf("want a plain base and no coverage note: %q", text)
+	}
+}
+
+// The coverage note must not say "from 100%" when a little input is missing.
+func TestCoverageNoteIsNotRoundedUpToAllInput(t *testing.T) {
+	if got := coverPct(0.9984); got != "99.8%" {
+		t.Errorf("coverPct(0.9984) = %q, want 99.8%%", got)
+	}
+	if got := coverPct(0.5); got != "50%" {
+		t.Errorf("coverPct(0.5) = %q", got)
+	}
+}
+
+func TestReasoningIsCalledReasoningEverywhere(t *testing.T) {
+	c := sample(t)
+	out := strings.Join(TokenMix(Theme{ASCII: true}, c, 100), "\n")
+	if !strings.Contains(out, "of which reasoning") || strings.Contains(out, "thinking") {
+		t.Errorf("token mix wording:\n%s", out)
+	}
+}
+
+func dayGroups(start time.Time, n int, tokens func(i int) int64) []*agg.Group {
+	out := make([]*agg.Group, n)
+	for i := range out {
+		d := start.AddDate(0, 0, i)
+		out[i] = &agg.Group{Key: d.Format("2006-01-02"), Input: tokens(i)}
+	}
+	return out
+}
+
+func TestDayBucketsSizeIsTheSmallestThatFits(t *testing.T) {
+	days := dayGroups(time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), 49, func(int) int64 { return 1 })
+	if vals, size := DayBuckets(days, 7); size != 7 || len(vals) != 7 {
+		t.Errorf("49 days in 7 slots: size %d, %d buckets; want weekly", size, len(vals))
+	}
+	days = dayGroups(time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), 50, func(int) int64 { return 1 })
+	vals, size := DayBuckets(days, 7)
+	if size != 8 || len(vals) != 7 || vals[6] != 2 { // the last bucket holds the two days left over
+		t.Errorf("50 days in 7 slots: size %d, buckets %v", size, vals)
+	}
+	if vals, size := DayBuckets(days[:5], 7); size != 1 || len(vals) != 5 {
+		t.Errorf("days that fit are not grouped: size %d", size)
+	}
+}
+
+// A window longer than the chart is drawn in buckets: the peak refers to the
+// bucket (its first and last day), and the chart line says the bucket size.
+func TestDailyPeakRefersToTheBucket(t *testing.T) {
+	days := dayGroups(time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), 70, func(i int) int64 {
+		if i >= 21 && i < 28 { // one busy week, Oct 22-28
+			return 100
+		}
+		return 1
+	})
+	c := &Ctx{Sum: &agg.Summary{ByDay: days, Total: &agg.Group{Input: 1000}}}
+	out := strings.Join(Daily(Theme{ASCII: true}, c, 14), "\n") // chart of 10 columns: weekly buckets
+	if !strings.Contains(out, "weekly buckets") {
+		t.Errorf("chart line must name the bucket size:\n%s", out)
+	}
+	if !strings.Contains(out, "peak 2026-10-22..2026-10-28 (700)") {
+		t.Errorf("peak must be the busy week, not one day:\n%s", out)
+	}
+	short := &Ctx{Sum: &agg.Summary{ByDay: days[:5], Total: &agg.Group{Input: 5}}}
+	out = strings.Join(Daily(Theme{ASCII: true}, short, 60), "\n")
+	if strings.Contains(out, "buckets") || !strings.Contains(out, "peak 2026-10-01 ") {
+		t.Errorf("days that fit need no bucket note:\n%s", out)
+	}
+}
+
+func TestCompactTrendNamesBucketAndPeakRange(t *testing.T) {
+	days := dayGroups(time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), 70, func(i int) int64 {
+		if i >= 21 && i < 28 {
+			return 100
+		}
+		return 1
+	})
+	c := &Ctx{Sum: &agg.Summary{ByDay: days, Total: &agg.Group{Input: 1000}}}
+	out := strings.Join(Compact(Theme{ASCII: true}, c, 62), "\n")
+	if !strings.Contains(out, "weekly buckets") || !strings.Contains(out, "peak 10-22..10-28") {
+		t.Errorf("compact trend:\n%s", out)
+	}
+}
+
+// Truncated names keep a date-like snapshot suffix, so two snapshots of one
+// model still look different.
+func TestTruncKeepsSnapshotDate(t *testing.T) {
+	th := Theme{ASCII: true}
+	a := th.Trunc("claude-sonnet-4-6-20260101", 16)
+	b := th.Trunc("claude-sonnet-4-6-20260201", 16)
+	if a == b {
+		t.Fatalf("snapshots look the same: %q and %q", a, b)
+	}
+	if Width(a) != 16 || !strings.HasSuffix(a, "~-20260101") || !strings.HasSuffix(b, "~-20260201") {
+		t.Errorf("want central ellipsis keeping the date, within 16 columns: %q and %q", a, b)
+	}
+	// without a date the end is cut as before
+	if got := th.Trunc("gpt-5.4-codex-preview", 10); got != "gpt-5.4-c~" {
+		t.Errorf("plain names are still cut at the end: %q", got)
+	}
+}
+
+// Compact arrows say what they compare with.
+func TestCompactArrowsSayVsPrev(t *testing.T) {
+	pt, _ := pricing.Load("")
+	d := func(day int) time.Time { return time.Date(2026, 9, day, 12, 0, 0, 0, time.UTC) }
+	evs := []model.Event{
+		{Provider: "claude", Model: "claude-sonnet-5-5", Session: "a", Project: "/w", Time: d(30), Input: 100, Output: 100},
+		{Provider: "claude", Model: "claude-sonnet-5-5", Session: "a", Project: "/w", Time: time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC), Input: 400, Output: 100},
+	}
+	f := agg.Filter{From: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), To: time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC)}
+	c := &Ctx{Sum: agg.Summarize(evs, f, pt, time.UTC), Prices: pt}
+	out := strings.Join(Compact(Theme{ASCII: true}, c, 100), "\n")
+	if n := strings.Count(out, "vs prev"); n < 2 {
+		t.Errorf("token and cost changes must say \"vs prev\", got %d in:\n%s", n, out)
+	}
+	if !strings.Contains(out, "^ 150% vs prev") { // 500 tokens against 200 in the previous period
+		t.Errorf("token change missing:\n%s", out)
+	}
+}
+
+// schema_version is the first key of the JSON document.
+func TestJSONStartsWithSchemaVersion(t *testing.T) {
+	var b bytes.Buffer
+	if err := JSON(&b, sample(t)); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(b.String(), "{\n  \"schema_version\": 1,\n") {
+		t.Errorf("document must start with schema_version:\n%.80s", b.String())
+	}
+	var d map[string]any
+	if err := json.Unmarshal(b.Bytes(), &d); err != nil || d["schema_version"] != float64(JSONSchemaVersion) {
+		t.Errorf("schema_version not readable: %v", err)
+	}
+}
+
+// Event CSV: the price is looked up once per model; the cost column must be
+// the same as pricing every event on its own.
+func TestEventCSVCostsMatchPerEventPricing(t *testing.T) {
+	pt, _ := pricing.Load("")
+	evs := []model.Event{
+		{Provider: "claude", Model: "claude-sonnet-5-5", Session: "a", Project: "/w", Time: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC), Input: 1000, Output: 500},
+		{Provider: "claude", Model: "claude-sonnet-5-5", Session: "a", Project: "/w", Time: time.Date(2026, 10, 1, 13, 0, 0, 0, time.UTC), Input: 2000, Output: 0},
+		{Provider: "codex", Model: "codex-auto-review", Session: "b", Project: "/w", Time: time.Date(2026, 10, 1, 14, 0, 0, 0, time.UTC), Input: 5, Output: 5},
+	}
+	var b bytes.Buffer
+	c := &Ctx{Sum: agg.Summarize(evs, agg.Filter{}, pt, time.UTC), Prices: pt}
+	if err := CSV(&b, c, "events", evs, &agg.Filter{}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := csv.NewReader(&b).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, e := range evs {
+		want := ""
+		if p := pt.Lookup(e.Model); p != nil {
+			want = fmt.Sprintf("%.6f", p.Cost(&evs[i]))
+		}
+		if got := rows[i+1][len(rows[i+1])-1]; got != want {
+			t.Errorf("row %d (%s): cost %q, want %q", i, e.Model, got, want)
+		}
+	}
+}

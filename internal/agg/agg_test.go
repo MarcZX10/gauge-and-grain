@@ -368,3 +368,53 @@ func TestSessionLabelsStayUniqueWithinASummary(t *testing.T) {
 		t.Errorf("want 2 distinct session labels, got %v", seen)
 	}
 }
+
+// A provider that does not report cache reads must not lower the cache hit
+// share: the share is taken over the events that report them, and the
+// coverage says how much of the input that is.
+func TestCacheShareUsesOnlyEventsThatReportCaches(t *testing.T) {
+	reports := ev(1, "claude", "claude-sonnet-5-5", "/a", "s1", 100, 10)
+	reports.CacheRead, reports.CacheWrite = 900, 0
+	reports.Has = model.HasCacheRead
+	silent := ev(1, "codex", "gpt-5.4", "/a", "s2", 1000, 10) // reports no caches
+	pt, _ := pricing.Load("")
+	s := Summarize([]model.Event{reports, silent}, Filter{}, pt, utc)
+
+	share, ok := s.Total.CacheShare()
+	if !ok || share != 0.9 {
+		t.Errorf("share over reporting events = %v (ok %v), want 0.9", share, ok)
+	}
+	cov, ok := s.Total.CacheCoverage()
+	if !ok || cov != 0.5 {
+		t.Errorf("coverage = %v (ok %v), want 0.5 (1000 of 2000 input tokens)", cov, ok)
+	}
+	for _, g := range s.ByProvider {
+		if g.Key == "codex" {
+			if _, ok := g.CacheShare(); ok {
+				t.Error("a provider that reports no caches has no cache share")
+			}
+		}
+	}
+}
+
+// Two projects that end in the same two elements get longer labels until
+// they differ, and projects that already differ keep the short label.
+func TestProjectLabelsStayUniqueWithinASummary(t *testing.T) {
+	pt, _ := pricing.Load("")
+	evs := []model.Event{
+		ev(1, "claude", "claude-sonnet-5-5", "/home/a/x/app", "s1", 10, 0),
+		ev(1, "claude", "claude-sonnet-5-5", "/home/b/x/app", "s2", 10, 0),
+		ev(1, "claude", "claude-sonnet-5-5", "/work/api", "s3", 10, 0),
+	}
+	s := Summarize(evs, Filter{}, pt, utc)
+	labels := map[string]string{}
+	for _, g := range s.ByProject {
+		labels[g.Key] = g.Label
+	}
+	if labels["/home/a/x/app"] != "a/x/app" || labels["/home/b/x/app"] != "b/x/app" {
+		t.Errorf("labels must be unique: %v", labels)
+	}
+	if labels["/work/api"] != "work/api" {
+		t.Errorf("unambiguous project keeps the short label: %v", labels)
+	}
+}
