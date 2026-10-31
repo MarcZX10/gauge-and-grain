@@ -196,6 +196,11 @@ func main() {
 			return
 		}
 		die(errors.New("usage: gg cache clear"))
+	case "compare":
+		if err := compareCmd(args); err != nil {
+			die(err)
+		}
+		return
 	case "", "report", "notes", "tui", "export", "sources", "prices":
 	default:
 		die(fmt.Errorf("unknown command %q (try `gg help`)", cmd))

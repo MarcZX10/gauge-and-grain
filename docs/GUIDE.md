@@ -84,6 +84,40 @@ On the command line the equivalent is `--days`, `--from/--to` and `--all`.
 
 <p align="center"><img src="img/period.png" alt="The period picker" width="760"></p>
 
+## Compare two periods
+
+`gg compare A B` puts two periods side by side: the totals (tokens, estimated cost, sessions, API calls and cache
+share), then the providers and the models, each with its tokens and cost in A and in B.
+
+```
+gg compare 2026-09 2026-10
+gg compare 14d 2026-10-01..2026-10-15 --provider claude
+```
+
+Each period takes the same forms as the dashboard picker, one argument per period:
+
+| Period | Meaning |
+|---|---|
+| `14d` | the last 14 days, counting today |
+| `2026-10-29` | that day |
+| `2026-10` | that month |
+| `2026` | that year |
+| `2026-10-01..2026-10-15` | an inclusive range |
+| `all` | everything |
+
+- **Changes are B against A**: `(B - A) / A`. The A value is the base, shown in its own column. A row that exists only in
+  B shows `new`; a row with nothing in either period shows `—`.
+- **Cost** is compared only when both periods are fully priced. If either one has unpriced usage, its cost change is
+  `n/a` (the cost cells show `≥` for a partly priced side and `unpriced` for a side with none). See `gg notes`.
+- **Cache share** changes are in percentage points, not percent.
+- **Rows** are sorted by B, busiest first. Each table shows at most 25 rows.
+- **Filters** `--provider`, `--model` and `--project` apply to both periods. `--prices`, `--no-cache`, `--no-color`
+  and `--ascii` work as in the report. `--days`, `--from`, `--to`, `--all` and the report-only flags are refused:
+  the periods are the arguments.
+
+The output is text only; there is no JSON form. For machine-readable numbers, run `gg export --all --format json`
+for each period with the same filters and compare the files.
+
 ## The dashboard (TUI)
 
 `gg` opens a dashboard with seven views:
