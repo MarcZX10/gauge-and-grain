@@ -2,6 +2,7 @@
 
 Everything `gg` can do, in one place. For the short version see the [README](../README.md).
 
+- [Install](#install)
 - [Commands](#commands)
 - [Filters](#filters)
 - [Periods](#periods)
@@ -12,6 +13,18 @@ Everything `gg` can do, in one place. For the short version see the [README](../
 - [Configuration](#configuration)
 - [Colour, plain output and small terminals](#colour-plain-output-and-small-terminals)
 - [Cancelling and the cache](#cancelling-and-the-cache)
+
+## Install
+
+The [README](../README.md) has the install commands. The installers (`scripts/install.sh`, `scripts/install.ps1`) read
+these variables:
+
+| Variable | Meaning |
+|---|---|
+| `GG_VERSION` | Install this release tag. Default: the latest release. |
+| `GG_INSTALL_DIR` | Where `gg` is written. Default: `~/.local/bin`, or `%LOCALAPPDATA%\gg\bin` on Windows. |
+| `GG_ALLOW_UNVERIFIED=1` | Install without `cosign`, checking only the checksum. Not recommended. |
+| `GG_RELEASE_BASE` | Download `gg_<os>_<arch>` (`.tar.gz` or `.zip`), `checksums.txt` and its `.pem`/`.sig` from this URL instead of GitHub. Meant for testing and mirrors; use an `https://` URL. The signature and checksum checks still apply to the files it serves, so a mirror must serve files from a release built by this repository's workflow. |
 
 ## Commands
 

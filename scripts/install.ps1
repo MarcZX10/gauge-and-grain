@@ -4,6 +4,9 @@
 # is installed without it) and the release checksum (see docs/PRIVACY.md#verify-a-download).
 # Env: GG_VERSION (default: latest)  GG_INSTALL_DIR (default: %LOCALAPPDATA%\gg\bin)
 #      GG_ALLOW_UNVERIFIED=1 installs without cosign, checking only the checksum (not recommended)
+#      GG_RELEASE_BASE=<https URL> downloads from there instead of GitHub (for testing and mirrors).
+#        The signature and checksum checks still apply to the files it serves: they must be
+#        the files of a release built by this repository's release workflow.
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ProgressPreference = 'SilentlyContinue'
