@@ -1796,12 +1796,21 @@ func (m *model_) footer() []string {
 	}
 	type hint struct{ key, what string }
 	all := []hint{{"←→", "view"}, {"↑↓", "move"}, {"⏎", "drill"}, {"esc", "back"}, {"t", "period"}, {"[ ]", "shift"}, {"p", "provider"}, {"c", "clear"}, {"/", "search"}, {"s", "sort"}, {"m", "compact"}, {"e", "export"}, {"n", "notes"}, {"?", "help"}, {"q", "quit"}}
-	if !m.isTable() {
+	if !m.isTable() { // Enter drills nothing on the text views: r rescans in its place
 		all[1].what, all[2] = "scroll", hint{"r", "rescan"}
+	}
+	// Export writes tables only. In the picker and the help, r and e are
+	// typed or close the help, so they are not offered there.
+	var shown []hint
+	for _, h := range all {
+		if h.key == "e" && !m.isTable() || (h.key == "e" || h.key == "r") && (m.picker || m.help) {
+			continue
+		}
+		shown = append(shown, h)
 	}
 	var parts []string
 	used := 0
-	for i, h := range all {
+	for i, h := range shown {
 		key := t.Fold(h.key) // folded first: the ASCII key is wider
 		p := t.Bold(key) + " " + t.Dim(h.what)
 		need := render.Width(key) + 1 + len(h.what) + 3

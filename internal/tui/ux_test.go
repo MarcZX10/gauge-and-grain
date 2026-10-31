@@ -499,6 +499,34 @@ func TestSortToggleReordersWithoutSummarizing(t *testing.T) {
 	}
 }
 
+// The footer offers only the keys that act on the current tab and mode:
+// export writes tables only, Enter drills tables only, and r and e are typed
+// in the period picker or close the help.
+func TestFooterOffersOnlyWhatActsHere(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	footer := func() string { return render.Strip(strings.Join(m.footer(), "\n")) }
+	for _, k := range []string{"1", "7", "8"} { // Overview, Tools, Notes: text views
+		press(m, k)
+		if f := footer(); strings.Contains(f, "export") || strings.Contains(f, "drill") || !strings.Contains(f, "rescan") {
+			t.Errorf("tab %s: footer must show rescan and neither export nor drill: %s", k, f)
+		}
+	}
+	resize(m, 200, 40) // wide enough for every hint of a table
+	press(m, "2")
+	if f := footer(); !strings.Contains(f, "export") || !strings.Contains(f, "drill") {
+		t.Errorf("Daily: footer must offer export and drill: %s", f)
+	}
+	press(m, "t")
+	if f := footer(); strings.Contains(f, "export") || strings.Contains(f, "rescan") {
+		t.Errorf("picker: r and e are typed there, the footer must not offer them: %s", f)
+	}
+	press(m, "esc", "?")
+	if f := footer(); strings.Contains(f, "export") || strings.Contains(f, "rescan") {
+		t.Errorf("help: the footer must not offer r or e: %s", f)
+	}
+}
+
 // A cancelled first scan with stale files starts no full rescan.
 func TestCancelledFirstScanStartsNoFollowUp(t *testing.T) {
 	m := fixtureModel(t, render.Theme{ASCII: true})
