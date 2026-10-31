@@ -60,7 +60,8 @@ corrupt entry is simply re-parsed, and a cancelled scan leaves finished files ca
 Each event has a `Key` (`claude:<message.id>`, `codex:resp:<response_id>`, …). Keys are
 merged within a file (streamed chunks: counters take the max) and **across files** (resumed sessions,
 archived copies). The global pass uses a 64-bit hash of the key (collision odds ≈ 7e-7 at 5M events, the birthday bound n²/2⁶⁵),
-interns repeated strings and drops the keys to keep memory flat.
+interns repeated strings and drops the keys to keep memory flat. The kept events are held in fixed-size
+chunks while the merge runs and joined once at its end, so the list is not copied as it grows.
 
 ### Aggregation index
 `agg.NewIndex` folds events once into *cells* — one per (day, provider, model, project, session) — and

@@ -55,7 +55,32 @@ func TestHashCollisionDoesNotMergeDifferentCalls(t *testing.T) {
 	res := &Result{}
 	m := newMerger(res)
 	m.add(&entry{Events: []model.Event{{Key: "a", Input: 1}, {Key: "b", Input: 2}, {Key: "a", Input: 4}, {Key: "b", Input: 3}}})
+	m.finish()
 	if len(res.Events) != 2 || res.Duplicate != 2 || res.Events[0].Input != 4 || res.Events[1].Input != 3 {
 		t.Fatalf("collision merged different calls: %+v (duplicates %d)", res.Events, res.Duplicate)
+	}
+}
+
+// The merged list keeps first-seen order across chunk boundaries, and a
+// duplicate found in an earlier chunk still merges into its event (Merge
+// keeps the larger counts).
+func TestMergeAcrossChunksKeepsOrderAndMerges(t *testing.T) {
+	const n = 2*chunkLen + 5
+	res := &Result{}
+	m := newMerger(res)
+	var evs []model.Event
+	for i := 0; i < n; i++ {
+		evs = append(evs, model.Event{Key: fmt.Sprint("k", i), Input: int64(i)})
+	}
+	evs = append(evs, model.Event{Key: "k3", Input: 1000}, model.Event{Key: fmt.Sprint("k", n-1), Input: 7})
+	m.add(&entry{Events: evs})
+	m.finish()
+	if len(res.Events) != n || res.Duplicate != 2 {
+		t.Fatalf("%d events, %d duplicates", len(res.Events), res.Duplicate)
+	}
+	for i, ev := range res.Events {
+		if want := int64(i); (i == 3 && ev.Input != 1000) || (i != 3 && ev.Input != want) {
+			t.Fatalf("event %d: input %d", i, ev.Input)
+		}
 	}
 }
