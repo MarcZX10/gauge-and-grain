@@ -266,8 +266,9 @@ func TestReportOutputIsUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out != string(want) {
-		t.Errorf("report output changed:\n--- want\n%s\n--- got\n%s", want, out)
+	// Windows checkouts may turn the golden's line endings into CRLF.
+	if got, exp := strings.ReplaceAll(out, "\r\n", "\n"), strings.ReplaceAll(string(want), "\r\n", "\n"); got != exp {
+		t.Errorf("report output changed:\n--- want\n%s\n--- got\n%s", exp, got)
 	}
 }
 
