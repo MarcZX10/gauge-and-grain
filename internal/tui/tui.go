@@ -314,15 +314,29 @@ func (m *model_) recompute() {
 		f.Providers = []string{m.provList()[m.provIdx-1]}
 	}
 	m.sum = m.idx.Summarize(f)
-	if m.sort == byCost {
-		for _, gs := range [][]*agg.Group{m.sum.ByProvider, m.sum.ByModel, m.sum.ByProject, m.sum.BySession} {
-			sort.SliceStable(gs, func(i, j int) bool { return gs[i].Cost > gs[j].Cost })
-		}
-	}
+	m.sortGroups()
 	m.cx = &render.Ctx{Sum: m.sum, Detect: m.cfg.Detect, Files: m.res.Files, Stats: m.res.Stats,
 		Cached: m.res.Cached, Parsed: m.res.Parsed, Duplicate: m.res.Duplicate, Errors: len(m.res.Errors),
 		Cancelled: m.cancelled, Prices: m.cfg.Prices, RangeName: m.rangeNm, Filters: m.filterText()}
 	m.warn, _ = render.NoteCounts(m.cx)
+	m.ver++
+}
+
+// sortGroups orders the tables of the summary: by tokens, the order the
+// index gives, or by cost. It only reorders the groups already summed, so
+// the sort key "s" costs no pass over the events.
+func (m *model_) sortGroups() {
+	for _, gs := range [][]*agg.Group{m.sum.ByProvider, m.sum.ByModel, m.sum.ByProject, m.sum.BySession} {
+		sort.SliceStable(gs, func(i, j int) bool {
+			if a, b := gs[i].Tokens(), gs[j].Tokens(); a != b {
+				return a > b
+			}
+			return gs[i].Key < gs[j].Key
+		})
+		if m.sort == byCost {
+			sort.SliceStable(gs, func(i, j int) bool { return gs[i].Cost > gs[j].Cost })
+		}
+	}
 	m.ver++
 }
 
@@ -505,7 +519,7 @@ func (m *model_) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		m.sort = 1 - m.sort
 		m.resetView()
-		m.recompute()
+		m.sortGroups() // the groups are already summed: only their order changes
 		if m.tab == tabDaily || m.tab == tabOverview {
 			m.note = "sorting applies to Providers, Models, Projects and Sessions"
 		}

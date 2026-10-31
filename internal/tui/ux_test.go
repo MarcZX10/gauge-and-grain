@@ -472,6 +472,33 @@ func TestUnchangedScanKeepsTheIndex(t *testing.T) {
 	}
 }
 
+// s re-sorts the summed groups: no new summary, the same order as a summary
+// sorted by cost from scratch, and the token order again on the second press.
+func TestSortToggleReordersWithoutSummarizing(t *testing.T) {
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	press(m, "4")
+	byTok := labelsOf(m.groups())
+	sum := m.sum
+	press(m, "s")
+	if m.sum != sum {
+		t.Error("s must reorder the summary it has, not summarize again")
+	}
+	ref := fixtureModel(t, render.Theme{ASCII: true})
+	ref.sort = byCost
+	ref.recompute()
+	if got, want := labelsOf(m.groups()), labelsOf(ref.sum.ByModel); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("cost order after s: %v, want %v", got, want)
+	}
+	if strings.Join(labelsOf(m.groups()), "|") == strings.Join(byTok, "|") {
+		t.Fatal("the test needs a model order that depends on the sort key")
+	}
+	press(m, "s")
+	if got := labelsOf(m.groups()); strings.Join(got, "|") != strings.Join(byTok, "|") {
+		t.Errorf("token order after a second s: %v, want %v", got, byTok)
+	}
+}
+
 // A cancelled first scan with stale files starts no full rescan.
 func TestCancelledFirstScanStartsNoFollowUp(t *testing.T) {
 	m := fixtureModel(t, render.Theme{ASCII: true})
