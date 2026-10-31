@@ -44,7 +44,7 @@ var vscodeExts = []VSCodeExt{
 
 func (v VSCodeExt) ID() string         { return v.id }
 func (v VSCodeExt) Name() string       { return v.name }
-func (v VSCodeExt) ParserVersion() int { return 1 }
+func (v VSCodeExt) ParserVersion() int { return 2 } // 2: cancelled requests with tokens are counted
 func (v VSCodeExt) Experimental() string {
 	return "parser follows the extension's ui_messages.json format as documented by third-party readers; not verified against real logs"
 }
@@ -124,12 +124,11 @@ type uiMessage struct {
 }
 
 type apiReq struct {
-	TokensIn     *int64  `json:"tokensIn"`
-	TokensOut    *int64  `json:"tokensOut"`
-	CacheWrites  *int64  `json:"cacheWrites"`
-	CacheReads   *int64  `json:"cacheReads"`
-	CancelReason *string `json:"cancelReason"`
-	UsageMissing bool    `json:"usage_missing"`
+	TokensIn     *int64 `json:"tokensIn"`
+	TokensOut    *int64 `json:"tokensOut"`
+	CacheWrites  *int64 `json:"cacheWrites"`
+	CacheReads   *int64 `json:"cacheReads"`
+	UsageMissing bool   `json:"usage_missing"`
 }
 
 type extParser struct {
@@ -164,8 +163,8 @@ func (p *extParser) Line(doc []byte) {
 			st.Malformed++
 			continue
 		}
-		if r.CancelReason != nil || r.UsageMissing || (r.TokensIn == nil && r.TokensOut == nil) {
-			continue // cancelled, no usage reported, or still in flight
+		if r.UsageMissing || (r.TokensIn == nil && r.TokensOut == nil) {
+			continue // no usage reported, or still in flight; a cancelled one counts if it has tokens
 		}
 		if m.TS <= 0 {
 			st.Malformed++

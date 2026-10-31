@@ -117,8 +117,9 @@ Code - Insiders, Cursor, Windsurf, VSCodium, Positron, Antigravity and VS Code S
 `kilocode.kilo-code`, `zoocodeorganization.zoo-code`.
 
 **Semantics:** each `api_req_started` message carries `tokensIn` (uncached), `tokensOut`,
-`cacheWrites`, `cacheReads`. Requests still in flight (no token fields), cancelled ones and ones flagged
-`usage_missing` are skipped. The model comes from `task_metadata.json` (Cline, by request time) or the
+`cacheWrites`, `cacheReads`. Requests still in flight (no token fields) and ones flagged `usage_missing` are skipped. A
+**cancelled request is counted when the extension recorded `tokensIn` or `tokensOut` for it**; a cancelled one
+with no tokens is skipped. The model comes from `task_metadata.json` (Cline, by request time) or the
 last `<model>…</model>` in `api_conversation_history.json` (Roo, Kilo, Zoo — so a mid-task model
 switch is attributed to the last model). **No working directory is recorded**, so projects show as
 `(unknown)`. These files change in place, so a changed task is re-read in full.
