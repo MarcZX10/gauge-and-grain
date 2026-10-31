@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -560,6 +561,55 @@ func TestScanETA(t *testing.T) {
 	m.started = time.Now().Add(-2 * time.Second)
 	if v := render.Strip(m.View()); strings.Contains(v, "left") {
 		t.Errorf("no estimate before 3 seconds:\n%s", v)
+	}
+}
+
+// y copies the selected table row with OSC 52 and says "copied" for a few
+// seconds; the sequence is the base64 of the text, with the clipboard target.
+func TestCopyRowSendsOSC52AndSaysCopied(t *testing.T) {
+	if got, want := osc52("hi there"), "\x1b]52;c;aGkgdGhlcmU=\a"; got != want {
+		t.Errorf("osc52 = %q, want %q", got, want)
+	}
+	m := fixtureModel(t, render.Theme{ASCII: true})
+	resize(m, 120, 40)
+	press(m, "4", "down")
+	row := m.selectedRowText()
+	if label := m.groups()[m.cursor[tabModels]].Label; row == "" || !strings.Contains(row, label) {
+		t.Fatalf("the selected row text must name its row %q: %q", label, row)
+	}
+	var out bytes.Buffer
+	clipboardOut = &out
+	t.Cleanup(func() { clipboardOut = os.Stdout })
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if cmd == nil || !strings.Contains(m.status(), "copied") {
+		t.Fatalf("y must copy and say so: cmd=%v status=%q", cmd != nil, m.status())
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok || len(batch) == 0 {
+		t.Fatalf("y must run the copy and the timer: %T", cmd())
+	}
+	batch[0]() // the copy; the timer waits a few seconds and is not run here
+	if out.String() != osc52(row) {
+		t.Errorf("the copy wrote %q, want %q", out.String(), osc52(row))
+	}
+	m.copied = time.Now().Add(-2 * copiedFor)
+	if strings.Contains(m.status(), "copied") {
+		t.Error("the status must stop saying copied after a few seconds")
+	}
+	m.copied = time.Now() // a newer copy
+	m.Update(copiedMsg(m.copied.Add(-time.Second)))
+	if m.copied.IsZero() {
+		t.Error("the timer of an older copy must not end a newer one")
+	}
+	m.Update(copiedMsg(m.copied))
+	if !m.copied.IsZero() {
+		t.Error("the timer of the current copy ends it")
+	}
+	press(m, "1") // Overview has no row to copy
+	out.Reset()
+	press(m, "y")
+	if out.Len() != 0 || !strings.Contains(m.note, "nothing to copy") {
+		t.Errorf("y on a text view must copy nothing and say so: wrote %q note=%q", out.String(), m.note)
 	}
 }
 

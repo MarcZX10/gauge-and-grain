@@ -4,8 +4,10 @@ package tui
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -140,12 +142,20 @@ type model_ struct {
 	updated    time.Time
 	// freshQueued is set once the stale cache has been replaced by a full scan.
 	freshQueued bool
+	// copied is when y last copied a row; the status line says so for a few seconds.
+	copied time.Time
 }
 
 type progressMsg scan.Progress
 type doneMsg *scan.Result
 type tickMsg time.Time
 type refreshMsg struct{}
+
+// copiedMsg ends the "copied" status of the copy made at that time.
+type copiedMsg time.Time
+
+// copiedFor is how long the status line says "copied".
+const copiedFor = 3 * time.Second
 
 // scanMsg tags a message from a scan with its sequence number, so the
 // messages of a scan that was replaced are ignored.
@@ -353,6 +363,10 @@ func (m *model_) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case progressMsg:
 		m.prog = scan.Progress(msg)
 		return m, listen(m.seq, m.ch)
+	case copiedMsg:
+		if time.Time(msg).Equal(m.copied) {
+			m.copied = time.Time{}
+		}
 	case tickMsg:
 		if m.loading {
 			m.frame++
@@ -516,6 +530,15 @@ func (m *model_) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.provIdx = (m.provIdx + 1) % (len(m.provList()) + 1)
 		m.resetView()
 		m.recompute()
+	case "y":
+		text := m.selectedRowText()
+		if text == "" {
+			m.note = "nothing to copy here: y copies the selected table row"
+			break
+		}
+		at := time.Now()
+		m.copied = at
+		return m, tea.Batch(copyText(text), tea.Tick(copiedFor, func(time.Time) tea.Msg { return copiedMsg(at) }))
 	case "s":
 		m.sort = 1 - m.sort
 		m.resetView()
@@ -1842,6 +1865,9 @@ func (m *model_) status() string {
 	} else if !m.updated.IsZero() {
 		s += " · updated " + m.updated.Format("15:04")
 	}
+	if !m.copied.IsZero() && time.Since(m.copied) < copiedFor {
+		s += " · copied"
+	}
 	if m.note != "" {
 		s += " · " + m.note
 	}
@@ -1870,6 +1896,7 @@ func (m *model_) helpView() []string {
 		{"Enter · Esc · Backspace", "in search: apply, cancel, delete a letter"},
 		{"↑ ↓ · Enter · Esc", "in the period picker: choose, type a range, close"},
 		{"m · e", "compact summary · export this table to CSV (Daily to Sessions)"},
+		{"y", "copy the selected table row to the clipboard (OSC 52: terminals that lack it ignore it)"},
 		{"r · R", "rescan now (unchanged files come from the cache)"},
 		{"mouse", "wheel scrolls; click tabs, periods, rows and bars; pointing previews a day"},
 		{"Shift + drag", "select and copy text (the terminal needs it while the mouse is used)"},
@@ -2000,6 +2027,41 @@ func (m *model_) exportView() {
 		return
 	}
 	m.note = "exported " + by + " view to ./" + name
+}
+
+// selectedRowText is the text of the selected table row as it is drawn, with
+// no colour, or "" when no table row is selected.
+func (m *model_) selectedRowText() string {
+	gs := m.groups()
+	cur := m.cursor[m.tab]
+	if !m.isTable() || m.sum == nil || cur < 0 || cur >= len(gs) {
+		return ""
+	}
+	g := m.geometry()
+	off := m.offset[m.tab]
+	end := min(len(gs), off+g.vis)
+	if cur < off || cur >= end {
+		return ""
+	}
+	_, rows := render.TableRowsOpt(m.cfg.Theme, gs[off:end], m.sum.Total.Tokens(), g.tableW-4, tabLabel[m.tab], true, m.tab == tabDaily)
+	return strings.TrimSpace(render.Strip(rows[cur-off]))
+}
+
+// clipboardOut is where the clipboard sequence goes: the terminal itself.
+var clipboardOut io.Writer = os.Stdout
+
+// copyText puts text on the terminal's clipboard. Nothing is printed back,
+// so a terminal without OSC 52 simply shows nothing.
+func copyText(text string) tea.Cmd {
+	return func() tea.Msg {
+		io.WriteString(clipboardOut, osc52(text))
+		return nil
+	}
+}
+
+// osc52 is the escape sequence that sets the clipboard ("c") to text.
+func osc52(text string) string {
+	return "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(text)) + "\a"
 }
 
 // heatWeeks is how many week columns the activity calendar draws in width w.
