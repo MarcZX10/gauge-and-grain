@@ -18,7 +18,7 @@ Everything `gg` can do, in one place. For the short version see the [README](../
 | Command | What it does |
 |---|---|
 | `gg` | Opens the dashboard when stdout and stdin are terminals; prints the report otherwise (so `gg \| less` and scripts get text). |
-| `gg report` | The compact text report. Add `--compact`, `--daily`, `--notes`. |
+| `gg report` | The compact text report. Add `--compact`, `--daily`, `--notes`, `--what-if FILE`. |
 | `gg tui` | Forces the dashboard. |
 | `gg notes` | How far to trust the numbers: estimates, unpriced models, gaps, experimental data, sources, price dates. |
 | `gg export` | JSON or CSV to stdout. See [EXPORT.md](EXPORT.md). |
@@ -174,7 +174,8 @@ top provider claude 82%  ·  model claude-sonnet-5-5 56%  ·  project dev/websho
 ## The report
 
 `gg report` prints the same data without a UI: headline numbers, token mix, a daily trend, and the top providers,
-models and projects. `--daily` adds a per-day table; `--notes` appends the full [notes](#notes). Width follows your
+models and projects. `--daily` adds a per-day table; `--notes` appends the full [notes](#notes); `--what-if FILE` adds one
+line under the cost with the same range priced by another prices file (see [PRICING.md](PRICING.md#what-if-prices)). Width follows your
 terminal (`COLUMNS` if it is not a terminal) and never overflows. When stdout is a pipe the output is plain text.
 
 ## Notes
