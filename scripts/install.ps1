@@ -4,6 +4,9 @@
 # is installed without it) and the release checksum (see docs/PRIVACY.md#verify-a-download).
 # Env: GG_VERSION (default: latest)  GG_INSTALL_DIR (default: %LOCALAPPDATA%\gg\bin)
 #      GG_ALLOW_UNVERIFIED=1 installs without cosign, checking only the checksum (not recommended)
+#      GG_RELEASE_BASE=<https URL> downloads from there instead of GitHub (for testing and mirrors).
+#        The signature and checksum checks still apply to the files it serves: they must be
+#        the files of a release built by this repository's release workflow.
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ProgressPreference = 'SilentlyContinue'
@@ -36,9 +39,21 @@ try {
       Invoke-WebRequest "$base/checksums.txt.pem" -OutFile "$tmp\checksums.txt.pem" -UseBasicParsing
       Invoke-WebRequest "$base/checksums.txt.sig" -OutFile "$tmp\checksums.txt.sig" -UseBasicParsing
     } catch { throw "this release has no signature (checksums.txt.pem/.sig); nothing installed" }
-    & $cosign.Source verify-blob --certificate "$tmp\checksums.txt.pem" --signature "$tmp\checksums.txt.sig" `
-      --certificate-identity-regexp "^https://github.com/$([regex]::Escape($repo))/\.github/workflows/release\.yml@refs/tags/v.+$" `
-      --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' "$tmp\checksums.txt" *> $null
+    # Windows PowerShell 5.1 turns cosign's stderr (it prints "Verified OK" there) into a
+    # terminating error under 'Stop', so relax the preference for this one call only.
+    # $LASTEXITCODE starts at 1, so anything but a clean cosign exit fails closed.
+    $savedPreference = $ErrorActionPreference
+    $LASTEXITCODE = 1
+    try {
+      $ErrorActionPreference = 'Continue'
+      & $cosign.Source verify-blob --certificate "$tmp\checksums.txt.pem" --signature "$tmp\checksums.txt.sig" `
+        --certificate-identity-regexp "^https://github.com/$([regex]::Escape($repo))/\.github/workflows/release\.yml@refs/tags/v.+$" `
+        --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' "$tmp\checksums.txt" 2>&1 | Out-Null
+    } catch {
+      $LASTEXITCODE = 1
+    } finally {
+      $ErrorActionPreference = $savedPreference
+    }
     if ($LASTEXITCODE -ne 0) { throw "the signature on checksums.txt does not match this repository's release workflow; nothing installed" }
     Write-Host "Signature verified (cosign, release workflow of $repo)."
   } else {
