@@ -15,17 +15,21 @@ func walkExt(dirs []string, keep func(path string) bool, out *[]string) error {
 	seen := map[string]bool{}
 	visited := map[string]bool{}
 	for _, d := range dirs {
-		walkTree(resolve(d), keep, seen, visited, out)
+		root := resolve(d)
+		real, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			gaps.Add(1)
+			continue
+		}
+		walkTree(root, real, keep, seen, visited, out)
 	}
 	return nil
 }
 
-func walkTree(dir string, keep func(path string) bool, seen, visited map[string]bool, out *[]string) {
-	real, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		gaps.Add(1)
-		return
-	}
+// walkTree lists dir, whose resolved path is real. Only the roots and the
+// symlinks met below them are resolved: a plain subdirectory's resolved path
+// is its parent's plus its name, so it costs no extra path lookups.
+func walkTree(dir, real string, keep func(path string) bool, seen, visited map[string]bool, out *[]string) {
 	if visited[real] {
 		return
 	}
@@ -37,9 +41,17 @@ func walkTree(dir string, keep func(path string) bool, seen, visited map[string]
 	}
 	for _, de := range ents {
 		p := filepath.Join(dir, de.Name())
-		if isDirEntry(p, de) {
-			walkTree(p, keep, seen, visited, out)
-		} else if keep(p) && isRegular(p, de) && !seen[p] {
+		switch {
+		case de.IsDir():
+			walkTree(p, filepath.Join(real, de.Name()), keep, seen, visited, out)
+		case de.Type()&os.ModeSymlink != 0 && isDirEntry(p, de):
+			r, err := filepath.EvalSymlinks(p)
+			if err != nil {
+				gaps.Add(1)
+				continue
+			}
+			walkTree(p, r, keep, seen, visited, out)
+		case keep(p) && isRegular(p, de) && !seen[p]:
 			seen[p] = true
 			*out = append(*out, p)
 		}
